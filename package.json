@@ -1,0 +1,29 @@
+{
+  "name": "steward",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted fleet-and-data guardian: indexes your machines, keeps novel data redundant, converges every box to your setup.",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --hot src/daemon/main.ts",
+    "dev:ui": "vite",
+    "build": "vite build",
+    "start": "bun run src/daemon/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/bun": "^1.3.14",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}

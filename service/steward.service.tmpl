@@ -1,0 +1,14 @@
+[Unit]
+Description=Steward daemon
+After=network.target
+
+[Service]
+ExecStart=@BUN@ run @SRC@/src/daemon/main.ts
+WorkingDirectory=@SRC@
+Restart=always
+RestartSec=3
+StandardOutput=append:@HOME@/logs/daemon.log
+StandardError=append:@HOME@/logs/daemon.err.log
+
+[Install]
+WantedBy=default.target
