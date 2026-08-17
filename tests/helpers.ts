@@ -18,6 +18,7 @@ export function testConfig(overrides: Partial<StewardConfig> = {}): StewardConfi
   return {
     nodeName: "test-node",
     port: 0,
+    bind: "127.0.0.1",
     roots: [],
     junkDirs: ["node_modules", "dist"],
     skipDirs: [".git"],
@@ -34,10 +35,14 @@ export interface TestServer {
   api: (path: string, init?: RequestInit) => Promise<Response>;
 }
 
-export function startTestServer(cfg: StewardConfig = testConfig()): TestServer {
+export function startTestServer(
+  cfg: StewardConfig = testConfig(),
+  opts: { token?: string; nodeId?: string } = {}
+): TestServer {
+  const token = opts.token ?? TEST_TOKEN;
   const db = new Database(":memory:");
   initSchema(db);
-  const { fetch: appFetch, websocket } = createServer(db, cfg, TEST_TOKEN);
+  const { fetch: appFetch, websocket } = createServer(db, cfg, token, opts.nodeId ?? "stw-test");
   const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: appFetch, websocket });
   const base = `http://127.0.0.1:${server.port}`;
   return {
@@ -48,7 +53,7 @@ export function startTestServer(cfg: StewardConfig = testConfig()): TestServer {
     api: (path, init) =>
       fetch(`${base}${path}`, {
         ...init,
-        headers: { authorization: `Bearer ${TEST_TOKEN}`, ...init?.headers },
+        headers: { authorization: `Bearer ${token}`, ...init?.headers },
       }),
   };
 }

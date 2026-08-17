@@ -1,16 +1,17 @@
-import { loadConfig, loadToken, STEWARD_HOME } from "./config";
+import { loadConfig, loadToken, loadNodeId, STEWARD_HOME } from "./config";
 import { openDb } from "./db";
 import { createServer, VERSION } from "./server";
 import { runScan } from "./indexer/scan";
 
 const cfg = loadConfig();
 const token = loadToken();
+const nodeId = loadNodeId();
 const db = openDb();
-const { fetch, websocket } = createServer(db, cfg, token);
+const { fetch, websocket } = createServer(db, cfg, token, nodeId);
 
 const server = Bun.serve({
   port: cfg.port,
-  hostname: "127.0.0.1",
+  hostname: cfg.bind,
   fetch,
   websocket,
 });

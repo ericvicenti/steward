@@ -1,5 +1,24 @@
 export const token = () => localStorage.getItem("steward-token") ?? "";
 
+// ---- active node: "" = local, otherwise a paired node id. All API helpers
+// route through the local daemon's proxy when a remote node is active. ----
+export const activeNode = (): string => localStorage.getItem("steward-active-node") ?? "";
+export const activeNodeName = (): string => localStorage.getItem("steward-active-node-name") ?? "";
+
+export function setActiveNode(id: string, name: string): void {
+  localStorage.setItem("steward-active-node", id);
+  localStorage.setItem("steward-active-node-name", name);
+  window.dispatchEvent(new Event("steward-node-changed"));
+}
+
+/** Map "/api/<rest>" onto the active node (via proxy) or leave local. */
+export function scoped(path: string): string {
+  const node = activeNode();
+  if (!node || !path.startsWith("/api/")) return path;
+  if (path.startsWith("/api/fleet") || path.startsWith("/api/nodes/")) return path; // fleet mgmt is always local
+  return `/api/nodes/${node}/proxy/${path.slice("/api/".length)}`;
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -7,7 +26,7 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(scoped(path), {
     ...init,
     headers: { authorization: `Bearer ${token()}`, ...init?.headers },
   });
@@ -31,11 +50,20 @@ export const post = <T,>(path: string, body: unknown): Promise<T> =>
 export const wsUrl = (path: string, params: Record<string, string> = {}): string => {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const q = new URLSearchParams({ token: token(), ...params });
+  return `${proto}://${location.host}${scoped(path)}?${q}`;
+};
+
+/** Terminal WS path, node-aware (/api/term locally, /api/nodes/:id/term remotely). */
+export const termWsUrl = (params: Record<string, string> = {}): string => {
+  const node = activeNode();
+  const path = node ? `/api/nodes/${node}/term` : "/api/term";
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const q = new URLSearchParams({ token: token(), ...params });
   return `${proto}://${location.host}${path}?${q}`;
 };
 
 export const rawUrl = (path: string, params: Record<string, string> = {}): string =>
-  `${path}?${new URLSearchParams({ ...params, token: token() })}`;
+  `${scoped(path)}?${new URLSearchParams({ ...params, token: token() })}`;
 
 // ---- tiny hash router: #/route?key=value ----
 export interface Route {
@@ -46,7 +74,7 @@ export interface Route {
 export function parseHash(): Route {
   const h = location.hash.replace(/^#\/?/, "");
   const [path, query = ""] = h.split("?");
-  return { view: path || "dashboard", params: new URLSearchParams(query) };
+  return { view: path || "fleet", params: new URLSearchParams(query) };
 }
 
 export function navigate(view: string, params: Record<string, string> = {}): void {

@@ -47,7 +47,7 @@ beforeAll(async () => {
   play = mkdtempSync(join(homedir(), ".steward-e2e-play-"));
   writeFileSync(
     join(stewardHome, "config.json"),
-    JSON.stringify({ nodeName: "e2e-node", port: PORT, roots: [play], junkDirs: ["node_modules"], skipDirs: [".git"], scanDepth: 2 })
+    JSON.stringify({ nodeName: "e2e-node", port: PORT, bind: "127.0.0.1", roots: [play], junkDirs: ["node_modules"], skipDirs: [".git"], scanDepth: 2 })
   );
   writeFileSync(join(play, "readme.md"), "# playground\n");
   writeFileSync(join(play, "script.ts"), "export const x = 1\n");
@@ -73,19 +73,27 @@ beforeAll(async () => {
   page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   page.on("dialog", (d) => d.accept());
   await page.goto(`${BASE}/#t=${TOKEN}`);
-  await page.waitForSelector("text=Dashboard");
+  await page.waitForSelector("text=Fleet");
 }, 60000);
 
 afterAll(async () => {
   await browser?.close();
   daemon?.kill();
+  daemon2?.kill();
   rmSync(stewardHome, { recursive: true, force: true });
+  if (home2) rmSync(home2, { recursive: true, force: true });
   rmSync(play, { recursive: true, force: true });
 });
 
-test("dashboard renders with nav shell", async () => {
-  expect(await page.textContent("aside")).toContain("Steward");
-  expect(await page.textContent("main")).toContain("Dashboard");
+test("shell renders: title bar, activity bar, fleet home", async () => {
+  expect(await page.textContent("header")).toContain("Steward");
+  expect(await page.isVisible('[data-testid="nav-files"]')).toBe(true);
+  expect(await page.textContent("main")).toContain("this machine");
+});
+
+test("repos view renders the risk table", async () => {
+  await page.click('[data-testid="nav-repos"]');
+  await page.waitForSelector("text=Repositories");
 });
 
 test("files: lists playground entries with metadata", async () => {
@@ -262,6 +270,92 @@ test("terminal: runs shell commands end-to-end", async () => {
     return text?.includes(play.split("/").pop()!) ?? false;
   });
 }, 30000);
+
+// ---- fleet: pair a second daemon through the UI, then browse it remotely ----
+let daemon2: Subprocess | undefined;
+let home2: string | undefined;
+
+test("fleet: pair a second node via the UI and browse it", async () => {
+  home2 = mkdtempSync(join(tmpdir(), "steward-e2e-home2-"));
+  writeFileSync(join(home2, "token"), "e2e-token-two");
+  writeFileSync(join(home2, "node-id"), "stw-e2e-two");
+  writeFileSync(
+    join(home2, "config.json"),
+    JSON.stringify({ nodeName: "second-box", port: 4796, bind: "127.0.0.1", roots: [], junkDirs: [], skipDirs: [], scanDepth: 1 })
+  );
+  daemon2 = Bun.spawn(["bun", "run", join(ROOT, "src/daemon/main.ts")], {
+    env: { ...process.env, STEWARD_HOME: home2 },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  await waitFor(async () => {
+    try {
+      return (await fetch("http://127.0.0.1:4796/api/status?token=e2e-token-two")).ok;
+    } catch {
+      return false;
+    }
+  });
+
+  // get a pairing code from the second daemon (as its UI would)
+  const { code } = await (
+    await fetch("http://127.0.0.1:4796/api/fleet/pairing/start", {
+      method: "POST",
+      headers: { authorization: "Bearer e2e-token-two" },
+    })
+  ).json();
+
+  await page.goto(`${BASE}/#/fleet`);
+  await page.waitForSelector('[data-testid="pair-url"]');
+  await page.fill('[data-testid="pair-url"]', "http://127.0.0.1:4796");
+  await page.fill('[data-testid="pair-code"]', code);
+  await page.click('[data-testid="pair-submit"]');
+  await page.waitForSelector('[data-testid="pair-msg"]');
+  expect(await page.textContent('[data-testid="pair-msg"]')).toContain("Paired with second-box");
+
+  // the peer card appears and reports online
+  await page.waitForSelector("text=second-box");
+
+  // switch the whole UI onto the remote node and browse files through the proxy
+  await page.selectOption('[data-testid="node-switcher"]', "stw-e2e-two");
+  await gotoFiles(play);
+  expect(await page.isVisible('[data-testid="row-readme.md"]')).toBe(true);
+  // status bar shows we are remote
+  expect(await page.textContent('[data-testid="statusbar-node"]')).toContain("second-box");
+  // back to local
+  await page.selectOption('[data-testid="node-switcher"]', "");
+}, 45000);
+
+test("media player: playlist, transport, track switching", async () => {
+  mkdirSync(join(play, "music"), { recursive: true });
+  writeFileSync(join(play, "music", "01-first.mp3"), "not-really-audio");
+  writeFileSync(join(play, "music", "02-second.mp3"), "not-really-audio");
+  await page.goto(`${BASE}/#/edit?path=${encodeURIComponent(join(play, "music", "01-first.mp3"))}`);
+  await page.waitForSelector('[data-testid="media-player"]');
+  await page.waitForSelector('[data-testid="media-playlist"]');
+  expect(await page.textContent('[data-testid="media-playlist"]')).toContain("02-second.mp3");
+  expect(await page.isVisible('[data-testid="media-transport"]')).toBe(true);
+  await page.click('[data-testid="media-playlist"] >> text=02-second.mp3');
+  await waitFor(async () => (await page.textContent("main"))?.includes("2 of 2") ?? false);
+});
+
+test("mobile: bottom nav, compact files table, no tree", async () => {
+  const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  await phone.goto(`${BASE}/#t=${TOKEN}`);
+  await phone.waitForSelector('[data-testid="mnav-files"]');
+  expect(await phone.isVisible('[data-testid="mnav-term"]')).toBe(true);
+  expect(await phone.isVisible('[data-testid="nav-files"]')).toBe(false); // activity bar hidden
+
+  await phone.goto(`${BASE}/#/files?path=${encodeURIComponent(play)}`);
+  await phone.waitForSelector('[data-testid="row-readme.md"]');
+  expect(await phone.isVisible('[data-testid="file-tree"]')).toBe(false);
+  // permissions column is hidden on phones, name still visible
+  expect(await phone.isVisible('[data-testid="rowmenu-readme.md"]')).toBe(true);
+  // row menu button opens the context menu (touch affordance)
+  await phone.click('[data-testid="rowmenu-readme.md"]');
+  await phone.waitForSelector('[data-testid="context-menu"]');
+  expect(await phone.textContent('[data-testid="context-menu"]')).toContain("Get info");
+  await phone.close();
+});
 
 test("auth: wrong token is locked out", async () => {
   const p2 = await browser.newPage();

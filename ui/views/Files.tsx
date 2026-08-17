@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, post, rawUrl, navigate, fmtBytes, fmtAgo, fmtMode, fmtOctal, ApiError } from "../lib/api";
+import { ChevronRight, ChevronDown, DotsIcon, FolderIcon } from "../lib/icons";
 
 type Entry = {
   name: string;
@@ -200,6 +201,65 @@ function InfoDialog(props: { entry: Entry; path: string; listing: Listing; onClo
         </tbody>
       </table>
     </Modal>
+  );
+}
+
+// ---------- directory tree (desktop sidebar) ----------
+
+function TreeNode(props: {
+  path: string;
+  name: string;
+  depth: number;
+  current: string;
+  onNavigate: (p: string) => void;
+}) {
+  const [open, setOpen] = useState(props.depth === 0);
+  const [children, setChildren] = useState<{ name: string; path: string }[] | null>(null);
+  const isCurrent = props.current === props.path;
+
+  useEffect(() => {
+    if (!open || children) return;
+    api<Listing>(`/api/fs/list?path=${encodeURIComponent(props.path)}`)
+      .then((res) =>
+        setChildren(
+          res.entries
+            .filter((e) => !e.hidden && (e.type === "dir" || (e.type === "symlink" && e.targetType === "dir")))
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((e) => ({ name: e.name, path: joinPath(res.path, e.name) }))
+        )
+      )
+      .catch(() => setChildren([]));
+  }, [open]);
+
+  return (
+    <div>
+      <div
+        className={`flex cursor-pointer items-center gap-1 rounded px-1 py-[3px] text-[12px] ${
+          isCurrent ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+        }`}
+        style={{ paddingLeft: 4 + props.depth * 12 }}
+        onClick={() => {
+          setOpen(true);
+          props.onNavigate(props.path);
+        }}
+      >
+        <button
+          className="shrink-0 text-zinc-600 hover:text-zinc-300"
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen(!open);
+          }}
+        >
+          {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </button>
+        <FolderIcon size={13} className={isCurrent ? "text-emerald-400" : "text-zinc-600"} />
+        <span className="truncate">{props.name}</span>
+      </div>
+      {open &&
+        children?.map((c) => (
+          <TreeNode key={c.path} path={c.path} name={c.name} depth={props.depth + 1} current={props.current} onNavigate={props.onNavigate} />
+        ))}
+    </div>
   );
 }
 
@@ -502,7 +562,7 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
       onClick={() => setSel(new Set())}
     >
       {/* toolbar */}
-      <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+      <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-3 py-2" onClick={(e) => e.stopPropagation()}>
         <div className="flex min-w-0 flex-1 items-center gap-1 text-sm">
           {pathEdit === null ? (
             <div className="flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap" data-testid="breadcrumbs">
@@ -560,7 +620,7 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
             }}
             onKeyDown={(e) => e.key === "Enter" && filter && doDeepSearch()}
             placeholder="filter · Enter = deep search"
-            className="w-52 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs outline-none focus:border-zinc-600"
+            className="w-32 rounded-lg border border-zinc-800 sm:w-52 bg-zinc-900 px-3 py-1.5 text-xs outline-none focus:border-zinc-600"
             data-testid="files-filter"
           />
           <label className="flex items-center gap-1.5 text-xs text-zinc-400">
@@ -612,8 +672,16 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
         />
       </div>
 
+      <div className="flex min-h-0 flex-1">
+        {/* directory tree (desktop) */}
+        {listing && (
+          <aside className="hidden w-52 shrink-0 overflow-auto border-r border-zinc-800/70 p-1.5 md:block" data-testid="file-tree">
+            <TreeNode path={listing.home} name="~" depth={0} current={listing.path} onNavigate={go} />
+          </aside>
+        )}
+
       {/* body */}
-      <div className={`relative flex-1 overflow-auto ${dragOver ? "ring-2 ring-inset ring-emerald-500/60" : ""}`}>
+      <div className={`relative min-w-0 flex-1 overflow-auto ${dragOver ? "ring-2 ring-inset ring-emerald-500/60" : ""}`}>
         {error && (
           <div className="m-6 rounded-lg border border-red-900 bg-red-950/40 px-4 py-3 text-sm text-red-300">{error}</div>
         )}
@@ -651,10 +719,11 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
                 {(
                   [
                     ["name", "Name", ""],
-                    ["mode", "Permissions", "w-32"],
-                    ["owner", "Owner", "w-36"],
+                    ["mode", "Permissions", "hidden w-32 md:table-cell"],
+                    ["owner", "Owner", "hidden w-36 lg:table-cell"],
                     ["size", "Size", "w-24 text-right"],
-                    ["mtime", "Modified", "w-28 text-right"],
+                    ["mtime", "Modified", "hidden w-28 text-right sm:table-cell"],
+                    ["menu", "", "w-8"],
                   ] as const
                 ).map(([key, label, cls]) => (
                   <th
@@ -662,7 +731,7 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
                     className={`cursor-pointer px-4 py-2 font-medium hover:text-zinc-300 ${cls}`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (key === "mode" || key === "owner") return;
+                      if (key === "mode" || key === "owner" || key === "menu") return;
                       if (sortKey === key) setSortDir(sortDir === 1 ? -1 : 1);
                       else {
                         setSortKey(key as any);
@@ -691,7 +760,7 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
                     }
                   }}
                 >
-                  <td className="px-4 py-2" colSpan={5}>
+                  <td className="px-4 py-2" colSpan={6}>
                     ⬑ ..
                   </td>
                 </tr>
@@ -746,22 +815,36 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
                         )}
                       </div>
                     </td>
-                    <td className="px-4 py-1.5 font-mono text-xs text-zinc-500">
+                    <td className="hidden px-4 py-1.5 font-mono text-xs text-zinc-500 md:table-cell">
                       {(e.type === "dir" ? "d" : e.type === "symlink" ? "l" : "-") + fmtMode(e.mode)}
                     </td>
-                    <td className="px-4 py-1.5 text-xs text-zinc-500">
+                    <td className="hidden px-4 py-1.5 text-xs text-zinc-500 lg:table-cell">
                       {listing!.users[e.uid] ?? e.uid}:{listing!.groups[e.gid] ?? e.gid}
                     </td>
                     <td className="px-4 py-1.5 text-right text-xs tabular-nums text-zinc-400">
                       {e.type === "file" ? fmtBytes(e.size) : "—"}
                     </td>
-                    <td className="px-4 py-1.5 text-right text-xs tabular-nums text-zinc-500">{fmtAgo(e.mtime)}</td>
+                    <td className="hidden px-4 py-1.5 text-right text-xs tabular-nums text-zinc-500 sm:table-cell">{fmtAgo(e.mtime)}</td>
+                    <td className="px-2 py-1.5 text-right">
+                      <button
+                        className="rounded p-1 text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300"
+                        data-testid={`rowmenu-${e.name}`}
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          setSel(new Set([e.name]));
+                          const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+                          setCtx({ x: rect.left - 200, y: rect.bottom + 4, entry: e });
+                        }}
+                      >
+                        <DotsIcon size={14} />
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
               {visible.length === 0 && !error && (
                 <tr>
-                  <td colSpan={5} className="px-4 py-14 text-center text-sm text-zinc-600">
+                  <td colSpan={6} className="px-4 py-14 text-center text-sm text-zinc-600">
                     {listing ? "Empty folder — drop files here to upload." : "Loading…"}
                   </td>
                 </tr>
@@ -778,6 +861,7 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
           </div>
         )}
       </div>
+      </div>
 
       {/* status bar */}
       <div className="flex items-center justify-between border-t border-zinc-800 px-4 py-1.5 text-xs text-zinc-600">
@@ -786,14 +870,14 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
           {sel.size > 0 && ` · ${sel.size} selected`}
           {clip && ` · clipboard: ${clip.paths.length} (${clip.mode})`}
         </span>
-        <span>⌘C copy · ⌘X cut · ⌘V paste · ⌘A all · ⌫ delete · drag to move · drop files to upload</span>
+        <span className="hidden lg:inline">⌘C copy · ⌘X cut · ⌘V paste · ⌘A all · ⌫ delete · drag to move · drop files to upload</span>
       </div>
 
       {/* context menu */}
       {ctx && (
         <div
           className="fixed z-50 w-56 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 py-1 text-sm shadow-2xl"
-          style={{ left: Math.min(ctx.x, window.innerWidth - 240), top: Math.min(ctx.y, window.innerHeight - 400) }}
+          style={{ left: Math.max(8, Math.min(ctx.x, window.innerWidth - 240)), top: Math.max(8, Math.min(ctx.y, window.innerHeight - 420)) }}
           onClick={(e) => e.stopPropagation()}
           data-testid="context-menu"
         >

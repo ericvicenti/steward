@@ -8,6 +8,8 @@ export const STEWARD_HOME = process.env.STEWARD_HOME ?? join(homedir(), ".stewar
 export interface StewardConfig {
   nodeName: string;
   port: number;
+  /** Listen address. 0.0.0.0 enables LAN fleet pairing; the API is token-gated. */
+  bind: string;
   /** Directories scanned for repos and novel data. */
   roots: string[];
   /** Directory basenames treated as derivable junk (reclaimable, never novel). */
@@ -21,6 +23,7 @@ export interface StewardConfig {
 const DEFAULTS: StewardConfig = {
   nodeName: hostname().replace(/\.local$/, ""),
   port: 4777,
+  bind: "0.0.0.0",
   roots: [join(homedir(), "Code")],
   junkDirs: [
     "node_modules", ".next", ".turbo", ".cache", "dist", "build", ".parcel-cache",
@@ -40,6 +43,15 @@ export function loadConfig(): StewardConfig {
   }
   const onDisk = JSON.parse(readFileSync(path, "utf8"));
   return { ...DEFAULTS, ...onDisk };
+}
+
+/** Stable node identity, minted on first run. */
+export function loadNodeId(): string {
+  const path = join(STEWARD_HOME, "node-id");
+  if (!existsSync(path)) {
+    writeFileSync(path, "stw-" + randomBytes(12).toString("hex"), { mode: 0o600 });
+  }
+  return readFileSync(path, "utf8").trim();
 }
 
 /** Bearer token gating the local HTTP API. Created on first run, mode 0600. */

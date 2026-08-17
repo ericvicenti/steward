@@ -59,6 +59,15 @@ export function initSchema(db: Database): void {
       status TEXT NOT NULL DEFAULT 'running'
     );
 
+    CREATE TABLE IF NOT EXISTS nodes (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL,
+      token TEXT NOT NULL,
+      added_at INTEGER NOT NULL,
+      last_seen INTEGER
+    );
+
     CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY,
       at INTEGER NOT NULL,

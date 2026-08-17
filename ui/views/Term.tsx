@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { wsUrl } from "../lib/api";
+import { termWsUrl, activeNode, activeNodeName } from "../lib/api";
 import "@xterm/xterm/css/xterm.css";
 
 export function Term({ params }: { params: URLSearchParams }) {
@@ -28,7 +28,7 @@ export function Term({ params }: { params: URLSearchParams }) {
     term.open(host.current);
     fit.fit();
 
-    const ws = new WebSocket(wsUrl("/api/term", cwd ? { cwd } : {}));
+    const ws = new WebSocket(termWsUrl(cwd ? { cwd } : {}));
     setStatus("connecting");
 
     ws.onopen = () => {
@@ -69,8 +69,9 @@ export function Term({ params }: { params: URLSearchParams }) {
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2.5">
-        <div className="flex-1 text-sm text-zinc-300">
+        <div className="min-w-0 flex-1 truncate text-sm text-zinc-300">
           Terminal
+          {activeNode() && <span className="ml-2 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-400">{activeNodeName()}</span>}
           <span className="ml-2 font-mono text-xs text-zinc-600">{cwd || "~"}</span>
         </div>
         <span

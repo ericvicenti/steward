@@ -7,13 +7,116 @@ import { search, searchKeymap, highlightSelectionMatches } from "@codemirror/sea
 import { oneDark } from "@codemirror/theme-one-dark";
 import { languages } from "@codemirror/language-data";
 import { api, post, rawUrl, navigate, fmtBytes, ApiError } from "../lib/api";
+import { SkipBackIcon, SkipFwdIcon, RepeatIcon, ShuffleIcon } from "../lib/icons";
 
 const MEDIA_EXT: Record<string, "image" | "video" | "audio" | "pdf"> = {
   png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", svg: "image", ico: "image", avif: "image",
   mp4: "video", webm: "video", mov: "video",
-  mp3: "audio", wav: "audio", m4a: "audio", flac: "audio",
+  mp3: "audio", wav: "audio", m4a: "audio", flac: "audio", ogg: "audio", aiff: "audio",
   pdf: "pdf",
 };
+
+// ---------- media player with folder playlist ----------
+
+function MediaPlayer({ path, kind }: { path: string; kind: "audio" | "video" }) {
+  const name = path.split("/").pop() ?? "";
+  const dir = path.slice(0, path.lastIndexOf("/")) || "~";
+  const [playlist, setPlaylist] = useState<string[]>([]);
+  const [loop, setLoop] = useState(false);
+  const [shuffle, setShuffle] = useState(false);
+
+  useEffect(() => {
+    api<{ entries: { name: string; type: string }[] }>(`/api/fs/list?path=${encodeURIComponent(dir)}`)
+      .then((res) =>
+        setPlaylist(
+          res.entries
+            .filter((e) => e.type === "file" && ["audio", "video"].includes(MEDIA_EXT[e.name.toLowerCase().split(".").pop() ?? ""] ?? ""))
+            .map((e) => e.name)
+            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+        )
+      )
+      .catch(() => setPlaylist([name]));
+  }, [dir]);
+
+  const idx = playlist.indexOf(name);
+  const goto = (n: string) => navigate("edit", { path: `${dir}/${n}` });
+  const step = (delta: number) => {
+    if (playlist.length < 2) return;
+    if (shuffle) {
+      const others = playlist.filter((p) => p !== name);
+      goto(others[Math.floor(Math.random() * others.length)]);
+    } else {
+      goto(playlist[(idx + delta + playlist.length) % playlist.length]);
+    }
+  };
+
+  const toggle = (on: boolean) =>
+    `rounded-lg p-2 ${on ? "bg-emerald-500/15 text-emerald-400" : "text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"}`;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col lg:flex-row" data-testid="media-player">
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 p-4 sm:p-8">
+        {kind === "video" ? (
+          <video
+            key={path}
+            src={rawUrl("/api/fs/read", { path })}
+            controls
+            autoPlay
+            loop={loop}
+            onEnded={() => !loop && step(1)}
+            className="max-h-full w-full max-w-4xl rounded-xl shadow-2xl"
+          />
+        ) : (
+          <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6 text-center shadow-2xl">
+            <div className="mx-auto flex h-28 w-28 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500/25 to-sky-500/20 text-5xl">
+              🎵
+            </div>
+            <div className="mt-4 truncate text-sm font-semibold text-zinc-100">{name}</div>
+            <div className="mt-0.5 text-[11px] text-zinc-500">
+              {idx + 1} of {playlist.length} in {dir.split("/").pop() || "~"}
+            </div>
+            <audio key={path} src={rawUrl("/api/fs/read", { path })} controls autoPlay loop={loop} onEnded={() => !loop && step(1)} className="mt-4 w-full" />
+          </div>
+        )}
+        <div className="flex items-center gap-1.5" data-testid="media-transport">
+          <button onClick={() => step(-1)} title="Previous" className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100">
+            <SkipBackIcon size={18} />
+          </button>
+          <button onClick={() => step(1)} title="Next" className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100">
+            <SkipFwdIcon size={18} />
+          </button>
+          <button onClick={() => setShuffle(!shuffle)} title="Shuffle" className={toggle(shuffle)}>
+            <ShuffleIcon size={16} />
+          </button>
+          <button onClick={() => setLoop(!loop)} title="Repeat one" className={toggle(loop)}>
+            <RepeatIcon size={16} />
+          </button>
+        </div>
+      </div>
+
+      {playlist.length > 1 && (
+        <aside className="max-h-48 shrink-0 overflow-auto border-t border-zinc-800 lg:max-h-none lg:w-72 lg:border-l lg:border-t-0" data-testid="media-playlist">
+          <div className="px-3 py-2 text-[10px] font-medium uppercase tracking-wider text-zinc-600">
+            Up next · {playlist.length} tracks
+          </div>
+          {playlist.map((n, i) => (
+            <button
+              key={n}
+              onClick={() => goto(n)}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] ${
+                n === name ? "bg-emerald-500/10 text-emerald-300" : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+              }`}
+            >
+              <span className="w-5 shrink-0 text-right font-mono text-[10px] text-zinc-600">{i + 1}</span>
+              <span className="truncate">{n}</span>
+              {n === name && <span className="ml-auto shrink-0 text-[9px]">▶</span>}
+            </button>
+          ))}
+        </aside>
+      )}
+    </div>
+  );
+}
 
 export function Editor({ params, onLocked }: { params: URLSearchParams; onLocked: () => void }) {
   const path = params.get("path") ?? "";
@@ -165,16 +268,7 @@ export function Editor({ params, onLocked }: { params: URLSearchParams; onLocked
           <img src={rawUrl("/api/fs/read", { path })} alt={name} className="max-h-full max-w-full rounded-lg shadow-2xl" />
         </div>
       )}
-      {media === "video" && (
-        <div className="flex flex-1 items-center justify-center p-8">
-          <video src={rawUrl("/api/fs/read", { path })} controls className="max-h-full max-w-full rounded-lg" />
-        </div>
-      )}
-      {media === "audio" && (
-        <div className="flex flex-1 items-center justify-center p-8">
-          <audio src={rawUrl("/api/fs/read", { path })} controls />
-        </div>
-      )}
+      {(media === "video" || media === "audio") && <MediaPlayer path={path} kind={media} />}
       {media === "pdf" && <iframe src={rawUrl("/api/fs/read", { path })} className="flex-1" title={name} />}
 
       {!media && state === "binary" && (

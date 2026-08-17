@@ -9,11 +9,12 @@ import { runScan, isScanRunning } from "./indexer/scan";
 import type { RepoRow } from "./db";
 import { registerFsRoutes } from "./api/fs";
 import { createTermHandlers } from "./api/term";
+import { registerFleetRoutes } from "./api/fleet";
 
 const UI_DIST = join(import.meta.dir, "../../dist/ui");
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 
-export function createServer(db: Database, cfg: StewardConfig, token: string) {
+export function createServer(db: Database, cfg: StewardConfig, token: string, nodeId = "stw-dev") {
   const { upgradeWebSocket, websocket } = createBunWebSocket();
   const app = new Hono();
 
@@ -24,6 +25,9 @@ export function createServer(db: Database, cfg: StewardConfig, token: string) {
   };
 
   app.use("/api/*", async (c, next) => {
+    // Pairing completion is called by a not-yet-trusted peer; the one-time
+    // code is its gate.
+    if (c.req.path === "/api/fleet/pairing/complete") return next();
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     await next();
   });
@@ -69,6 +73,7 @@ export function createServer(db: Database, cfg: StewardConfig, token: string) {
   });
 
   registerFsRoutes(app);
+  registerFleetRoutes(app, db, cfg, nodeId, token, upgradeWebSocket);
 
   app.get(
     "/api/term",

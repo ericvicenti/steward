@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, wsUrl, fmtAgo, ApiError } from "../lib/api";
+import { api, wsUrl, fmtAgo, activeNode, activeNodeName, ApiError } from "../lib/api";
 
 type Remote = { name: string; url: string };
 type Repo = {
@@ -53,7 +53,7 @@ function StatCard(props: { label: string; value: string; tone?: "red" | "amber" 
   );
 }
 
-export function Dashboard({ onLocked }: { onLocked: () => void }) {
+export function Repos({ onLocked }: { onLocked: () => void }) {
   const [status, setStatus] = useState<Status | null>(null);
   const [repos, setRepos] = useState<Repo[]>([]);
   const [filter, setFilter] = useState("");
@@ -71,6 +71,10 @@ export function Dashboard({ onLocked }: { onLocked: () => void }) {
 
   useEffect(() => {
     refresh();
+    if (activeNode()) {
+      const iv = setInterval(refresh, 10_000);
+      return () => clearInterval(iv);
+    }
     const ws = new WebSocket(wsUrl("/api/events"));
     ws.onmessage = (msg) => {
       const ev = JSON.parse(msg.data);
@@ -92,10 +96,11 @@ export function Dashboard({ onLocked }: { onLocked: () => void }) {
   }, [repos, filter]);
 
   return (
-    <div className="mx-auto max-w-6xl px-6 py-8">
+    <div className="h-full overflow-auto">
+    <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
       <header className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-zinc-100">Dashboard</h1>
+          <h1 className="text-lg font-semibold text-zinc-100">Repos{activeNode() ? ` on ${activeNodeName()}` : ""}</h1>
           <p className="text-xs text-zinc-500">
             {status ? `${status.nodeName} · watching ${status.roots.join(", ")}` : "connecting…"}
           </p>
@@ -116,7 +121,7 @@ export function Dashboard({ onLocked }: { onLocked: () => void }) {
         </div>
       </header>
 
-      <section className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-5">
+      <section className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-5 sm:gap-3">
         <StatCard label="repos" value={String(status?.repos ?? "—")} />
         <StatCard label="at risk" value={String(status?.atRisk ?? "—")} tone={status?.atRisk ? "red" : "green"} />
         <StatCard label="attention" value={String(status?.attention ?? "—")} tone={status?.attention ? "amber" : "green"} />
@@ -140,9 +145,9 @@ export function Dashboard({ onLocked }: { onLocked: () => void }) {
               <tr>
                 <th className="px-4 py-2.5 font-medium">Repo</th>
                 <th className="px-4 py-2.5 font-medium">Status</th>
-                <th className="px-4 py-2.5 font-medium">Needs</th>
+                <th className="hidden px-4 py-2.5 font-medium md:table-cell">Needs</th>
                 <th className="px-4 py-2.5 font-medium text-right">Last commit</th>
-                <th className="px-4 py-2.5 font-medium text-right">Junk</th>
+                <th className="hidden px-4 py-2.5 font-medium text-right md:table-cell">Junk</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800/70">
@@ -160,11 +165,11 @@ export function Dashboard({ onLocked }: { onLocked: () => void }) {
                       {r.risk === "at-risk" ? "at risk" : r.risk}
                     </span>
                   </td>
-                  <td className="max-w-xs px-4 py-2.5 text-xs text-zinc-400">
+                  <td className="hidden max-w-xs px-4 py-2.5 text-xs text-zinc-400 md:table-cell">
                     {r.risk_reasons.length ? r.risk_reasons.join(", ") : "—"}
                   </td>
                   <td className="px-4 py-2.5 text-right text-xs tabular-nums text-zinc-400">{fmtAgo(r.last_commit_at)}</td>
-                  <td className="px-4 py-2.5 text-right text-xs tabular-nums text-zinc-400">
+                  <td className="hidden px-4 py-2.5 text-right text-xs tabular-nums text-zinc-400 md:table-cell">
                     {r.junk_bytes ? fmtGB(r.junk_bytes) : "—"}
                   </td>
                 </tr>
@@ -180,6 +185,7 @@ export function Dashboard({ onLocked }: { onLocked: () => void }) {
           </table>
         </div>
       </section>
+    </div>
     </div>
   );
 }
