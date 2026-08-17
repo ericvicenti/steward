@@ -223,6 +223,7 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [pathEdit, setPathEdit] = useState<string | null>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
+  const folderRef = useRef<HTMLInputElement>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const toast = useCallback((msg: string) => {
@@ -317,7 +318,8 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
 
   const doUpload = async (files: FileList | File[]) => {
     const fd = new FormData();
-    for (const f of files) fd.append("files", f);
+    // webkitRelativePath preserves folder structure for directory uploads.
+    for (const f of files) fd.append("files", f, (f as any).webkitRelativePath || f.name);
     try {
       await api(`/api/fs/upload?dir=${encodeURIComponent(listing!.path)}`, { method: "POST", body: fd });
       toast(`Uploaded ${files.length} file${files.length > 1 ? "s" : ""}`);
@@ -574,6 +576,9 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
           <button onClick={() => uploadRef.current?.click()} className="rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800" data-testid="upload-btn">
             ⬆ Upload
           </button>
+          <button onClick={() => folderRef.current?.click()} className="rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800" title="Upload a whole folder" data-testid="upload-folder-btn">
+            ⬆ Folder
+          </button>
           {clip && (
             <button onClick={() => doPaste(listing!.path)} className="rounded-lg border border-emerald-700 px-2.5 py-1.5 text-xs text-emerald-400 hover:bg-emerald-900/30" data-testid="paste-btn">
               Paste {clip.paths.length}
@@ -595,6 +600,16 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
           </button>
         </div>
         <input ref={uploadRef} type="file" multiple className="hidden" data-testid="upload-input" onChange={(e) => e.target.files?.length && doUpload(e.target.files)} />
+        <input
+          ref={folderRef}
+          type="file"
+          multiple
+          className="hidden"
+          data-testid="upload-folder-input"
+          // @ts-expect-error non-standard but universally supported
+          webkitdirectory=""
+          onChange={(e) => e.target.files?.length && doUpload(e.target.files)}
+        />
       </div>
 
       {/* body */}

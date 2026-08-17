@@ -3,6 +3,7 @@ import { EditorView, keymap, lineNumbers, highlightActiveLine } from "@codemirro
 import { EditorState, Compartment } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { bracketMatching, indentOnInput, syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
+import { search, searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { languages } from "@codemirror/language-data";
 import { api, post, rawUrl, navigate, fmtBytes, ApiError } from "../lib/api";
@@ -74,9 +75,12 @@ export function Editor({ params, onLocked }: { params: URLSearchParams; onLocked
               syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
               oneDark,
               langCompartment.current.of(langSupport),
+              search({ top: true }),
+              highlightSelectionMatches(),
               keymap.of([
                 { key: "Mod-s", run: () => { save(); return true; } },
                 indentWithTab,
+                ...searchKeymap,
                 ...defaultKeymap,
                 ...historyKeymap,
               ]),

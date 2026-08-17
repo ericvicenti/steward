@@ -88,6 +88,28 @@ describe("fs over http", () => {
     expect(readFileSync(join(dir, "uploaded.txt"), "utf8")).toBe("upload body");
     expect(readFileSync(join(dir, "uploaded2.txt"), "utf8")).toBe("second");
   });
+  test("folder upload preserves relative structure", async () => {
+    const fd = new FormData();
+    fd.append("files", new File(["deep body"], "x", { type: "text/plain" }), "proj/src/deep.txt");
+    const res = await srv.api(`/api/fs/upload?dir=${encodeURIComponent(dir)}`, {
+      method: "POST",
+      body: fd,
+    });
+    expect(res.status).toBe(200);
+    expect(readFileSync(join(dir, "proj", "src", "deep.txt"), "utf8")).toBe("deep body");
+  });
+  test("folder upload rejects traversal in relative paths", async () => {
+    const fd = new FormData();
+    fd.append("files", new File(["evil"], "x", { type: "text/plain" }), "a/../../b/evil.txt");
+    const res = await srv.api(`/api/fs/upload?dir=${encodeURIComponent(dir)}`, {
+      method: "POST",
+      body: fd,
+    });
+    const body = await res.json();
+    // ".." segments are dropped, so the file lands inside the target dir.
+    expect(body.saved[0].path.startsWith(dir)).toBe(true);
+    expect(body.saved[0].path).toBe(join(dir, "a", "b", "evil.txt"));
+  });
   test("upload strips path components from filenames", async () => {
     const fd = new FormData();
     fd.append("files", new File(["evil"], "../../../escape.txt", { type: "text/plain" }));

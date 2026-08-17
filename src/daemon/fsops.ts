@@ -153,9 +153,16 @@ export async function writeFile(path: string, content: string) {
 }
 
 export async function uploadFile(dir: string, file: File) {
-  // Strip any client-supplied directory components.
-  const name = basename(file.name).replace(/^\.+$/, "_");
-  const full = resolveSafe(join(dir, name));
+  // The filename may carry a relative path (folder uploads). Sanitize each
+  // component: no empty, ".", "..", or absolute segments.
+  const parts = file.name
+    .split("/")
+    .map((p) => p.trim())
+    .filter((p) => p && p !== "." && p !== "..")
+    .map((p) => p.replace(/^\.+$/, "_"));
+  if (parts.length === 0) throw new FsError(400, "invalid filename");
+  const full = resolveSafe(join(dir, ...parts));
+  await fsp.mkdir(dirname(full), { recursive: true });
   await Bun.write(full, file);
   return { path: full };
 }
