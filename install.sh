@@ -34,7 +34,7 @@ elif [ -n "$STEWARD_REPO" ]; then
 elif [ -f "$(dirname "$0")/package.json" ] && grep -q '"name": "steward"' "$(dirname "$0")/package.json"; then
   # Running from a source checkout: clone it locally so the service owns its copy.
   local_src="$(cd "$(dirname "$0")" && pwd)"
-  log "installing from local checkout $local_src…"
+  log "installing from local checkout ${local_src}"
   git clone "$local_src" "$SRC"
   git -C "$SRC" remote set-url origin "$local_src"
 else
