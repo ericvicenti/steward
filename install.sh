@@ -17,7 +17,7 @@ command -v git >/dev/null || fail "git is required. On macOS: xcode-select --ins
 
 # --- bun ---------------------------------------------------------------------
 if ! command -v bun >/dev/null && [ ! -x "$HOME/.bun/bin/bun" ]; then
-  log "installing bun…"
+  log "installing bun..."
   curl -fsSL https://bun.sh/install | bash
 fi
 export PATH="$HOME/.bun/bin:$PATH"
@@ -26,10 +26,10 @@ BUN="$(command -v bun)"
 # --- source ------------------------------------------------------------------
 mkdir -p "$STEWARD_HOME/bin"
 if [ -d "$SRC/.git" ]; then
-  log "updating source in $SRC…"
+  log "updating source in $SRC..."
   git -C "$SRC" pull --ff-only || log "warning: could not fast-forward; keeping current source"
 elif [ -n "$STEWARD_REPO" ]; then
-  log "cloning $STEWARD_REPO…"
+  log "cloning $STEWARD_REPO..."
   git clone "$STEWARD_REPO" "$SRC"
 elif [ -f "$(dirname "$0")/package.json" ] && grep -q '"name": "steward"' "$(dirname "$0")/package.json"; then
   # Running from a source checkout: clone it locally so the service owns its copy.
@@ -42,7 +42,7 @@ else
 fi
 
 # --- build -------------------------------------------------------------------
-log "installing dependencies and building UI…"
+log "installing dependencies and building UI..."
 (cd "$SRC" && "$BUN" install --frozen-lockfile 2>/dev/null || "$BUN" install)
 (cd "$SRC" && "$BUN" run build)
 
