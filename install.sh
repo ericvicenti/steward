@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Steward installer — usage:
+# Steward installer - usage:
 #   curl -fsSL https://steward.sh/install | bash          (once hosted)
 #   ./install.sh                                          (from a source checkout)
 # Idempotent: safe to re-run; updates source, rebuilds, restarts the service.
@@ -52,6 +52,13 @@ cat > "$STEWARD_HOME/bin/steward" <<EOF
 exec "$BUN" run "$SRC/src/cli/steward.ts" "\$@"
 EOF
 chmod +x "$STEWARD_HOME/bin/steward"
+
+# Test mode (STEWARD_TEST=1): stop before touching PATH, services, or the browser.
+if [ -n "${STEWARD_TEST:-}" ]; then
+  log "test mode: skipping PATH link, service registration, and browser open"
+  exit 0
+fi
+
 for dir in "$HOME/.local/bin" /usr/local/bin; do
   if [ -d "$dir" ] && [ -w "$dir" ]; then
     ln -sf "$STEWARD_HOME/bin/steward" "$dir/steward" && break
@@ -83,4 +90,4 @@ fi
 # --- open --------------------------------------------------------------------
 sleep 1.5
 "$STEWARD_HOME/bin/steward" open || true
-log "done. UI: http://127.0.0.1:4777  ·  CLI: steward status"
+log "done. UI: http://127.0.0.1:4777  .  CLI: steward status"

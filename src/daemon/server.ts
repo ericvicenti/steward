@@ -1,17 +1,17 @@
 import { Hono } from "hono";
 import { createBunWebSocket } from "hono/bun";
 import { serveStatic } from "hono/bun";
-import { readdirSync, statSync, realpathSync } from "fs";
-import { homedir } from "os";
 import { join } from "path";
 import type { Database } from "bun:sqlite";
 import type { StewardConfig } from "./config";
 import { bus } from "./events";
 import { runScan, isScanRunning } from "./indexer/scan";
 import type { RepoRow } from "./db";
+import { registerFsRoutes } from "./api/fs";
+import { createTermHandlers } from "./api/term";
 
 const UI_DIST = join(import.meta.dir, "../../dist/ui");
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 export function createServer(db: Database, cfg: StewardConfig, token: string) {
   const { upgradeWebSocket, websocket } = createBunWebSocket();
@@ -68,32 +68,15 @@ export function createServer(db: Database, cfg: StewardConfig, token: string) {
     return c.json({ started: true });
   });
 
-  app.get("/api/fs", (c) => {
-    const requested = c.req.query("path") ?? homedir();
-    let path: string;
-    try {
-      path = realpathSync(requested);
-    } catch {
-      return c.json({ error: "not found" }, 404);
-    }
-    if (!path.startsWith(homedir())) {
-      return c.json({ error: "outside home directory" }, 403);
-    }
-    const entries = readdirSync(path, { withFileTypes: true })
-      .filter((e) => !e.name.startsWith("."))
-      .map((e) => {
-        let size = 0;
-        let mtime = 0;
-        try {
-          const s = statSync(join(path, e.name));
-          size = s.size;
-          mtime = s.mtimeMs;
-        } catch {}
-        return { name: e.name, dir: e.isDirectory(), size, mtime };
-      })
-      .sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
-    return c.json({ path, entries });
-  });
+  registerFsRoutes(app);
+
+  app.get(
+    "/api/term",
+    upgradeWebSocket((c) => {
+      if (!authed(c)) return {};
+      return createTermHandlers(c.req.query("cwd")) as any;
+    })
+  );
 
   app.get(
     "/api/events",

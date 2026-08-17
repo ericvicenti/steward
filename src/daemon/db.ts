@@ -25,6 +25,11 @@ export type RepoRow = {
 export function openDb(): Database {
   const db = new Database(join(STEWARD_HOME, "steward.db"), { create: true });
   db.exec("PRAGMA journal_mode = WAL;");
+  initSchema(db);
+  return db;
+}
+
+export function initSchema(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS repos (
       id INTEGER PRIMARY KEY,
@@ -61,5 +66,4 @@ export function openDb(): Database {
       payload TEXT NOT NULL DEFAULT '{}'
     );
   `);
-  return db;
 }
