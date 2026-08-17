@@ -7,10 +7,10 @@ node-to-node channel described in BRIEF.md.
 
 The indexer answers three questions, continuously and cheaply:
 
-1. **What data exists on this node?** (filesystem scanner → `entries`, `datasets`)
-2. **Which of it is novel vs derivable?** (classifier rule engine → `classification`)
+1. **What data exists on this node?** (filesystem scanner → `files`, `datasets`)
+2. **Which of it is novel vs derivable?** (classifier rule engine → `class_rules`)
 3. **How many independent copies of each novel dataset exist across the fleet?**
-   (redundancy model → `dataset_locations`, `redundancy score 0–3+`)
+   (redundancy model → `fleet_datasets`, `redundancy score 0–3+`)
 
 ---
 
@@ -18,7 +18,7 @@ The indexer answers three questions, continuously and cheaply:
 
 | Term | Meaning |
 |---|---|
-| **Entry** | A single file or directory row in the index. We do *not* index every file on disk — see pruning rules. |
+| **Entry** | A single file or directory row in the index (stored in the canonical `files` table, ARCHITECTURE.md §4.2, extended per §9 below). We do *not* index every file on disk — see pruning rules. |
 | **Dataset** | The unit of redundancy accounting. A directory subtree (or single large file) that is treated as one logical thing: a git repo, a project dir, a photo library, `~/Documents/Taxes`. Datasets never nest for scoring purposes (a repo inside `~/Code` is its own dataset; the residue of `~/Code` outside any repo is another). |
 | **Novel** | Data that cannot be regenerated or re-fetched. Losing the last copy = permanent loss. |
 | **Derivable** | Data reproducible from novel data + the network: `node_modules`, build output, caches, pushed git objects, re-downloadable artifacts. |
@@ -93,13 +93,15 @@ Full-content hashing of terabytes is off the table. The scanner uses three tiers
    since last scan), we trust the stored dirhash and skip descent. Cold scans (post-boot,
    watcher gap) always descend fully; the stat pass makes that ~O(#dirs) syscalls, which
    on an SSD with 500k entries is 10–30 s.
-3. **content hash** (`blake3`, chunked): computed lazily, only for (a) files being
-   snapshotted to the blob store, (b) duplicate-detection candidates (same size, both
-   ≥ 8 MiB), (c) dataset-level dedupe comparisons (§8). Stored in `entries.blake3`,
-   nullable.
+3. **content hash** (`sha256`, chunked — matches the blob-store CAS, ARCHITECTURE.md
+   §4.3): computed lazily, only for (a) files being snapshotted to the blob store,
+   (b) duplicate-detection candidates (same size, both ≥ 8 MiB), (c) dataset-level
+   dedupe comparisons (§8). Stored in `files.content_hash`, nullable. (The *dirhash*
+   change certificate stays blake3 — it is internal and never compared to CAS hashes.)
 
-Scan cadence: full stat-walk of all roots every 6 h (`scan_jobs` cron), plus event-driven
-partial scans (below), plus on-demand via API.
+Scan cadence: full stat-walk of all roots every 6 h (scheduler-enqueued `scan` jobs on
+the canonical `jobs` queue), plus event-driven partial scans (below), plus on-demand via
+API.
 
 ### 2.5 Watching: FSEvents / inotify
 
@@ -121,8 +123,9 @@ partial scans (below), plus on-demand via API.
 
 ### 2.6 Scan job algorithm
 
-Jobs live in `scan_jobs` (queue table). One scan runs at a time per node (single worker;
-IO-bound, and SQLite likes one writer). Pseudocode:
+Scans are jobs of type `scan` on the canonical `jobs` queue (ARCHITECTURE.md §5;
+concurrency group `disk-io` = one scan at a time per node — IO-bound, and SQLite likes
+one writer). Pseudocode:
 
 ```
 runScan(job):                      # job = {root_path, mode: full|partial|cold}
@@ -140,19 +143,19 @@ runScan(job):                      # job = {root_path, mode: full|partial|cold}
         markSubtreeSeen(dir, gen); continue     # single UPDATE by path prefix
     for c in children:
         st = lstat(c)
-        if isGitRepoRoot(c): enqueueGitJob(c)   # §5, async, separate queue
+        if isGitRepoRoot(c): enqueueRepoAudit(c) # §5, async 'repo_audit' job, dedupe-keyed
         upsertEntry(c, st, gen)    # only if changed → touch datasets.dirty
         if st.isDir and not classify(c).prune: stack.push(c)
     recomputeDirhash(dir)
   # deletions: anything under root_path with last_seen_gen < gen, for full/cold scans
-  DELETE FROM entries WHERE path GLOB root||'/*' AND last_seen_gen < gen  (full/cold only)
+  DELETE FROM files WHERE path GLOB root||'/*' AND last_seen_gen < gen  (full/cold only)
   refreshDatasets(root_path)       # §3: dataset boundaries, rollup sizes
   recomputeRedundancy(dirtyDatasets)
 ```
 
 All writes go through a batched transaction (commit every 2000 upserts). A scan is
-resumable: `scan_jobs.cursor` stores the last committed directory; crash ⇒ resume from
-cursor with the same generation.
+resumable: the job's `checkpoint` (ARCHITECTURE.md §5.4) stores the last committed
+directory + generation; crash ⇒ resume from cursor with the same generation.
 
 ---
 
@@ -172,7 +175,7 @@ Dataset boundaries are derived, not hand-drawn:
 
 Each dataset stores rollups maintained by `refreshDatasets`: `total_bytes`,
 `novel_bytes`, `derivable_bytes`, `file_count`, `newest_mtime`, `content_fingerprint`
-(dirhash of the root, minus pruned dirs), and for git datasets a pointer into `git_repos`.
+(dirhash of the root, minus pruned dirs), and for git datasets a pointer into `repos`.
 
 ---
 
@@ -232,8 +235,8 @@ Reclaimable bytes are first-class, not an afterthought:
 ## 5. Git repo intelligence
 
 Detected during scans (`isGitRepoRoot` = has `.git` dir or file). Each repo gets an
-async `git_jobs` inspection (separate single-worker queue, shells out to system `git`,
-per BRIEF). Per repo we run, with `-C repo` and `--no-optional-locks`:
+async `repo_audit` job (canonical `jobs` queue, dedupe-keyed, shells out to system
+`git`, per BRIEF). Per repo we run, with `-C repo` and `--no-optional-locks`:
 
 ```
 git rev-parse --git-dir --is-bare-repository
@@ -246,7 +249,7 @@ git log -1 --format=%ct --all
 git count-objects -v                          # size-pack for object-store bytes
 ```
 
-Derived fields stored in `git_repos` (schema §9):
+Derived fields stored in `repos` (canonical table + additive columns, schema §9):
 
 - `dirty` (staged/unstaged changes), `untracked_count`, `untracked_bytes` (from index,
   excluding gitignored), `stash_count` (each stash is novel!), `ahead_total` (sum of
@@ -361,39 +364,66 @@ deleting 41 safe-delete clones; 12 dirs need a push first; 9 are diverged."
 
 `~/.steward/steward.db`, WAL mode, `PRAGMA synchronous=NORMAL`, all timestamps unix ms.
 
+**The core tables — `nodes`, `scan_roots`, `scans`, `repos`, `files`, `dir_stats`,
+`jobs`, `snapshots`, `blobs` — are canonical in ARCHITECTURE.md §4.2.** The indexer
+ships additive migrations over them (per the additive-only migration rule) plus its own
+tables. New ids follow the core convention (ULID TEXT).
+
 ```sql
-CREATE TABLE scan_roots (
-  id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,
-  policy TEXT NOT NULL DEFAULT 'deep',          -- deep|shallow|metadata
-  enabled INTEGER NOT NULL DEFAULT 1, cold INTEGER NOT NULL DEFAULT 1);
+-- scan_roots (canonical) gains:
+ALTER TABLE scan_roots ADD COLUMN policy TEXT NOT NULL DEFAULT 'deep';  -- deep|shallow|metadata
+ALTER TABLE scan_roots ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE scan_roots ADD COLUMN cold INTEGER NOT NULL DEFAULT 1;      -- watcher gap ⇒ full descent
 
-CREATE TABLE entries (
-  id INTEGER PRIMARY KEY,
-  path TEXT NOT NULL UNIQUE,                    -- absolute
-  parent_id INTEGER REFERENCES entries(id),
-  kind INTEGER NOT NULL,                        -- 0 file,1 dir,2 symlink
-  size INTEGER NOT NULL DEFAULT 0, mtime_ns INTEGER, inode INTEGER, dev INTEGER,
-  dirhash BLOB, blake3 BLOB,                    -- nullable, lazy
-  small_files_count INTEGER DEFAULT 0, small_files_bytes INTEGER DEFAULT 0,
-  class TEXT NOT NULL DEFAULT 'novel',          -- novel|novel-secret|novel-suspect|derivable|derivable-remote|derivable-refetch
-  rule_id INTEGER, provenance TEXT,             -- rule that matched; refetch URL / remote
-  dataset_id INTEGER REFERENCES datasets(id),
-  last_seen_gen INTEGER NOT NULL);
-CREATE INDEX entries_parent ON entries(parent_id);
-CREATE INDEX entries_dataset ON entries(dataset_id);
-CREATE INDEX entries_gen ON entries(last_seen_gen);
-CREATE INDEX entries_size ON entries(size) WHERE kind=0 AND size>=8388608; -- dup candidates
+-- files (canonical) gains directory rows (kind=1), the dirhash certificate, small-file
+-- rollups, and classifier metadata. content_hash (sha256) is the canonical lazy hash.
+ALTER TABLE files ADD COLUMN kind INTEGER NOT NULL DEFAULT 0;   -- 0 file,1 dir,2 symlink
+ALTER TABLE files ADD COLUMN mtime_ns INTEGER;                  -- finer than mtime_ms for stat pass
+ALTER TABLE files ADD COLUMN dev INTEGER;
+ALTER TABLE files ADD COLUMN dirhash BLOB;                      -- blake3, dirs only, lazy
+ALTER TABLE files ADD COLUMN small_files_count INTEGER DEFAULT 0;
+ALTER TABLE files ADD COLUMN small_files_bytes INTEGER DEFAULT 0;
+ALTER TABLE files ADD COLUMN rule_id TEXT;                      -- class_rules match
+ALTER TABLE files ADD COLUMN provenance TEXT;                   -- refetch URL / remote
+ALTER TABLE files ADD COLUMN dataset_id TEXT REFERENCES datasets(id);
+ALTER TABLE files ADD COLUMN last_seen_gen TEXT;                -- scan generation (= jobs.id)
+CREATE INDEX files_dataset ON files(dataset_id);
+CREATE INDEX files_gen ON files(last_seen_gen);
+CREATE INDEX files_dup ON files(size) WHERE kind=0 AND size>=8388608; -- dup candidates
+-- (class enum extended to novel|novel-secret|novel-suspect|derivable|derivable-remote|
+--  derivable-refetch|ignored — see ARCHITECTURE §4.2 note.)
 
+-- repos (canonical) gains fleet identity + novelty columns:
+ALTER TABLE repos ADD COLUMN identity TEXT;              -- sha1(sorted root commits)
+ALTER TABLE repos ADD COLUMN state_hash TEXT;            -- hash of sorted (ref,tip); copy currency
+ALTER TABLE repos ADD COLUMN remote_urls TEXT;           -- JSON string[] normalized
+ALTER TABLE repos ADD COLUMN untracked_bytes INTEGER;
+ALTER TABLE repos ADD COLUMN branches_no_upstream INTEGER;
+ALTER TABLE repos ADD COLUMN objects_novel INTEGER;
+ALTER TABLE repos ADD COLUMN objects_bytes INTEGER;
+ALTER TABLE repos ADD COLUMN is_worktree_of TEXT;
+CREATE INDEX repos_identity ON repos(identity);
+
+-- snapshots (canonical) gains dataset linkage for redundancy scoring:
+ALTER TABLE snapshots ADD COLUMN dataset_global TEXT;
+ALTER TABLE snapshots ADD COLUMN volume_id TEXT;         -- same-volume snapshots score 0
+ALTER TABLE snapshots ADD COLUMN fingerprint BLOB;       -- dataset fingerprint at snapshot time
+CREATE INDEX snapshots_ds ON snapshots(dataset_global);
+
+-- Scan and repo-audit executions use the canonical jobs table (type 'scan' /
+-- 'repo_audit'); cursor + generation live in jobs.checkpoint. No separate queue tables.
+
+-- Indexer-owned tables:
 CREATE TABLE datasets (
-  id INTEGER PRIMARY KEY,
+  id TEXT PRIMARY KEY,                          -- ulid
   global_id TEXT NOT NULL,                      -- git identity | blake3(root:relpath) ; UNIQUE per node with root_path
   root_path TEXT NOT NULL UNIQUE,
   kind TEXT NOT NULL,                           -- git|dir|loose|file
   total_bytes INTEGER, novel_bytes INTEGER, derivable_bytes INTEGER,
   file_count INTEGER, newest_mtime INTEGER,
   content_fingerprint BLOB,                     -- dirhash excl. pruned
-  git_repo_id INTEGER REFERENCES git_repos(id),
-  project_id INTEGER REFERENCES projects(id),
+  repo_id TEXT REFERENCES repos(id),
+  project_id TEXT REFERENCES projects(id),
   score INTEGER, score_reasons TEXT,            -- JSON string[]
   redundancy_target INTEGER NOT NULL DEFAULT 2,
   dedupe_verdict TEXT, dirty INTEGER NOT NULL DEFAULT 1, updated_at INTEGER);
@@ -404,7 +434,7 @@ CREATE INDEX datasets_score ON datasets(score);
 CREATE TABLE dataset_overrides (path TEXT PRIMARY KEY, action TEXT NOT NULL); -- boundary|merge
 
 CREATE TABLE class_rules (
-  id INTEGER PRIMARY KEY, priority INTEGER NOT NULL,
+  id TEXT PRIMARY KEY, priority INTEGER NOT NULL,
   match_kind TEXT NOT NULL,                     -- name|path|sibling|gitignored|ext|mime
   pattern TEXT NOT NULL, sibling TEXT,
   class TEXT NOT NULL, action TEXT NOT NULL DEFAULT 'index',  -- index|prune
@@ -412,29 +442,18 @@ CREATE TABLE class_rules (
 CREATE INDEX class_rules_prio ON class_rules(enabled, priority DESC);
 
 CREATE TABLE derivable_breakdown (
-  dataset_id INTEGER NOT NULL REFERENCES datasets(id),
-  rule_id INTEGER NOT NULL, bytes INTEGER NOT NULL, dir_count INTEGER NOT NULL,
+  dataset_id TEXT NOT NULL REFERENCES datasets(id),
+  rule_id TEXT NOT NULL, bytes INTEGER NOT NULL, dir_count INTEGER NOT NULL,
   PRIMARY KEY (dataset_id, rule_id));
-
-CREATE TABLE git_repos (
-  id INTEGER PRIMARY KEY, root_path TEXT NOT NULL UNIQUE,
-  identity TEXT,                                -- sha1(sorted root commits); NULL if empty repo
-  state_hash TEXT,                              -- hash of sorted (ref,tip); for fleet copy currency
-  remote_urls TEXT,                             -- JSON string[] normalized
-  remoteless INTEGER, dirty INTEGER, untracked_count INTEGER, untracked_bytes INTEGER,
-  stash_count INTEGER, ahead_total INTEGER, branches_no_upstream INTEGER,
-  objects_novel INTEGER, objects_bytes INTEGER,
-  is_worktree_of TEXT, head_ref TEXT, last_commit_at INTEGER, inspected_at INTEGER);
-CREATE INDEX git_repos_identity ON git_repos(identity);
 
 CREATE TABLE git_remotes (
   url TEXT PRIMARY KEY, last_ok_at INTEGER, last_err TEXT, head_sample TEXT); -- ls-remote cache
 
 CREATE TABLE projects (
-  id INTEGER PRIMARY KEY, name TEXT NOT NULL, canonical_dataset_global TEXT,
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, canonical_dataset_global TEXT,
   created_by TEXT NOT NULL DEFAULT 'auto');     -- auto|user
 CREATE TABLE project_suggestions (
-  id INTEGER PRIMARY KEY, a_dataset TEXT NOT NULL, b_dataset TEXT NOT NULL,
+  id TEXT PRIMARY KEY, a_dataset TEXT NOT NULL, b_dataset TEXT NOT NULL,
   reason TEXT NOT NULL, overlap REAL, status TEXT NOT NULL DEFAULT 'open'); -- open|accepted|rejected
 
 CREATE TABLE fleet_datasets (                   -- gossiped manifest, all nodes incl. self
@@ -442,55 +461,51 @@ CREATE TABLE fleet_datasets (                   -- gossiped manifest, all nodes 
   content_fingerprint BLOB, git_state_hash TEXT, novel_bytes INTEGER, updated_at INTEGER,
   PRIMARY KEY (node_id, global_id, path));
 
-CREATE TABLE snapshots (                        -- blob-store copies (local index of fleet snapshots)
-  id INTEGER PRIMARY KEY, dataset_global TEXT NOT NULL, node_id TEXT NOT NULL,
-  volume_id TEXT, fingerprint BLOB NOT NULL, bytes INTEGER, completed_at INTEGER);
-CREATE INDEX snapshots_ds ON snapshots(dataset_global);
-
-CREATE TABLE scan_jobs (
-  id INTEGER PRIMARY KEY, root_path TEXT NOT NULL, mode TEXT NOT NULL, -- full|partial|cold
-  status TEXT NOT NULL DEFAULT 'queued',        -- queued|running|done|failed
-  cursor TEXT, enqueued_at INTEGER, started_at INTEGER, finished_at INTEGER, error TEXT);
-CREATE TABLE git_jobs (LIKE scan_jobs pattern; root_path, status, timestamps);
-CREATE TABLE reclaim_log (id INTEGER PRIMARY KEY, path TEXT, bytes INTEGER, rule_id INTEGER, at INTEGER);
+CREATE TABLE reclaim_log (id TEXT PRIMARY KEY, path TEXT, bytes INTEGER, rule_id TEXT, at INTEGER);
 ```
 
 ---
 
 ## 10. HTTP API (localhost:4777, Hono)
 
+These extend the canonical route table in ARCHITECTURE.md §6.2 (which owns
+`/api/roots`, `/api/files`, `/api/repos`, `/api/jobs`, `/api/redundancy/summary`):
+
 | Route | Purpose |
 |---|---|
-| `GET /api/index/summary` | Fleet + node totals: novel/derivable bytes, score histogram, reclaimable-by-rule |
+| `GET /api/index/summary` | Fleet + node totals: novel/derivable bytes, score histogram, reclaimable-by-rule (complements `GET /api/redundancy/summary`) |
 | `GET /api/datasets?score=0&sort=novel_bytes` | Dataset list w/ filters (score, kind, project, node) |
 | `GET /api/datasets/:id` | Full detail: rollups, score_reasons, git state, locations, breakdown |
-| `GET /api/entries?parent=…` | Tree browsing for the UI file explorer |
-| `POST /api/scan` | `{root?, mode?}` enqueue scan; `GET /api/scan/jobs` status (+ WS progress events `scan:progress {root, dirsDone, dirty}`) |
+| `GET /api/files?under=…` | Tree browsing for the UI file explorer (canonical route) |
+| `POST /api/roots/:id/scan` | `{full?, mode?}` enqueue scan (canonical route); status via `GET /api/jobs?type=scan` + WS `scan.progress` events |
 | `GET /api/rules` / `POST /api/rules` / `PATCH /api/rules/:id` | View/extend/disable classifier rules; PATCH triggers reclassify job |
 | `POST /api/reclaim` | `{rule_id?, dataset_id?, dry_run}` delete derivable dirs, returns per-path bytes |
 | `GET /api/projects` / `POST /api/projects/:id/merge` | Project groups + accept/reject suggestions |
 | `GET /api/projects/:id/dedupe` | Verdict list: canonical / safe-delete / push-then-delete / diverged |
-| `POST /api/git/:repoId/refresh` | Re-run inspection (and `ls-remote` if `?liveness=1`) |
+| `POST /api/repos/:id/audit` | Re-run inspection (canonical route; add `?liveness=1` for `ls-remote`) |
 
-WebSocket topics: `scan:progress`, `dataset:changed`, `score:changed`, `fleet:manifest`.
+WebSocket topics (dot taxonomy per ARCHITECTURE §7): `scan.progress`,
+`dataset.changed`, `score.changed`, `fleet.manifest`.
 
 ---
 
 ## 11. File layout (daemon source)
 
+Extends the canonical `src/scan/` module (ARCHITECTURE.md §2); scan/audit job handlers
+register in `src/jobs/` and routes live in `src/api/` per the core layout:
+
 ```
-src/indexer/
+src/scan/
   scanner.ts        # walk loop, stat pass, dirhash, generation logic
-  watcher.ts        # FSEvents/inotify adapters, dirty-set coalescer
-  classify.ts       # rule engine, compiled matchers (glob → picomatch, cached)
+  watcher.ts        # FSEvents/inotify adapters, dirty-set coalescer (canonical file)
+  classify.ts       # rule engine, compiled matchers (canonical file)
   rules.seed.ts     # built-in rule table (§4.1) as data
   datasets.ts       # boundary derivation, rollups, refreshDatasets
-  git.ts            # repo inspection, identity, liveness cache
+  gitinfo.ts        # repo inspection, identity, liveness cache (canonical file)
   redundancy.ts     # recomputeRedundancy, score reasons
   projects.ts       # grouping, suggestions, dedupe verdicts
-  jobs.ts           # scan_jobs/git_jobs queue workers
-  db.ts             # schema, migrations (user_version), prepared statements
-  api.ts            # Hono routes above
+src/jobs/scan.ts    # 'scan' handler   src/jobs/repo-audit.ts  # 'repo_audit' handler
+src/api/files.ts src/api/scans.ts …   # Hono routes above (migrations in migrations/)
 native/steward-fswatch/   # macOS FSEvents shim
 ```
 

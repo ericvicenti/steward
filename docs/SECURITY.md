@@ -60,25 +60,15 @@ encrypted WS channel.
 
 ```
 ~/.steward/                     mode 0700
-  identity.json                 mode 0600   ← the node's soul; never syncs
-  auth-token                    mode 0600   ← local browser/CLI auth (§4)
+  identity/
+    node.key                    mode 0600   ← ed25519 seed; the node's soul; never syncs
+    node.pub                                ← public key (also cached in DB)
+  token                         mode 0600   ← local browser/CLI auth (§4)
   steward.db                    mode 0600
 ```
 
-`identity.json`:
-
-```json
-{
-  "v": 1,
-  "nodeId": "stw1-Zm9vYmFyLXB1YmtleS1iMzJ...",
-  "ed25519": { "publicKey": "<b64url 32B>", "secretKey": "<b64url 64B>" },
-  "createdAt": "2026-08-18T00:00:00Z",
-  "name": "erics-mbp"
-}
-```
-
-- `nodeId` = `"stw1-" + base64url(ed25519 publicKey)` — the public key **is** the
-  identity (self-certifying, no CA).
+- `nodeId` = `"stw1" + base32nopad(ed25519 publicKey)` (FLEET.md §2.2 is normative) —
+  the public key **is** the identity (self-certifying, no CA).
 - Created on first daemon start if absent; written with `O_CREAT|O_EXCL` and
   `chmod 0600`; daemon refuses to start if perms are looser (like `ssh` does), logging
   the fix command.
@@ -87,27 +77,22 @@ encrypted WS channel.
 
 ### 3.2 Trusted-peers table
 
-```sql
-CREATE TABLE trusted_nodes (
-  node_id      TEXT PRIMARY KEY,        -- "stw1-…"
-  public_key   BLOB NOT NULL,           -- 32B ed25519
-  name         TEXT NOT NULL,
-  addresses    TEXT NOT NULL DEFAULT '[]', -- JSON: last-known ["192.168.1.10:4777", …]
-  paired_at    INTEGER NOT NULL,
-  last_seen_at INTEGER,
-  revoked_at   INTEGER                  -- non-null ⇒ refuse handshake, keep row for audit
-);
-```
+Trust is stored in the canonical `nodes` table (ARCHITECTURE.md §4.2): `id` is the
+nodeId, `pubkey` the ed25519 key, `endpoints` the last-known mesh addresses (port 4778),
+`paired_at` / `last_seen_at` timestamps, and `status='revoked'` refuses all future
+handshakes while keeping the row for audit.
 
 ### 3.3 Handshake (Noise-XX-with-signatures over WebSocket)
 
-Transport: the daemon's Hono server exposes `GET /ws/node` (WebSocket upgrade) on the
-LAN **only after** at least one peer is paired or a pairing window is open; otherwise
-the listener stays loopback-only. All frames after upgrade are binary.
+Transport: the dedicated mesh listener on `0.0.0.0:4778` exposes the WS upgrade at
+`/api/peer` (the loopback HTTP server on 4777 never leaves the machine). The listener
+speaks only this handshake; unknown peers are dropped after it unless a pairing window
+is open (FLEET.md §4.1). All frames after upgrade are binary.
 
-Pattern (mutual auth, forward secrecy; both sides prove possession of their ed25519 key
-by signing the transcript — simpler to audit than Noise static-key patterns and reuses
-the identity key directly):
+**Normative wire format lives in FLEET.md §4.3**; this section explains the security
+properties of that Noise-XX-style pattern (mutual auth, forward secrecy; both sides
+prove possession of their ed25519 key by signing the transcript — simpler to audit than
+Noise static-key patterns and reuses the identity key directly):
 
 ```
 Initiator (I)                          Responder (R)
@@ -119,11 +104,11 @@ Initiator (I)                          Responder (R)
                                          sig_R = ed25519_sign(sk_R, "stw-hs-v1" ‖ th)
   ◀──────  m2 = { ePub_R, nonce_R, nodeId_R, sig_R }
   ss = X25519(e_I, ePub_R)
-  verify sig_R against trusted_nodes[nodeId_R]     ← unknown/revoked ⇒ close(4403)
+  verify sig_R against nodes[nodeId_R]             ← unknown/revoked ⇒ close(4403)
   th  = BLAKE2b(m1 ‖ ePub_R ‖ nonce_R)             (same transcript hash)
   sig_I = ed25519_sign(sk_I, "stw-hs-v1" ‖ th)
   m3 = seal(k_i2r, n=0, { nodeId_I, sig_I })  ────▶
-                                         open m3, verify sig_I against trusted_nodes
+                                         open m3, verify sig_I against nodes
                                          unknown/revoked ⇒ close(4403)
 ```
 
@@ -161,23 +146,19 @@ uniform for all fleet features (git sync, blob sync, vault sync, docker admin).
 
 ### 3.5 Pairing (first contact)
 
-Trust bootstrap uses a short-lived one-time code, never TOFU:
+Trust bootstrap uses a short-lived one-time secret, never TOFU. **FLEET.md §3 is
+normative** for the two flows; the security shape:
 
-1. On node A (already yours): `steward pair` or UI button. A generates
-   `pairSecret = 32 random bytes`, displays it as a QR (full secret) **and** a human
-   code: 8 Crockford-base32 chars (40 bits) — the human code path additionally requires
-   both machines on the same LAN and a 60-second expiry, making the 40-bit space
-   un-brute-forceable in the window (A hard-fails pairing after 3 bad attempts).
-   A begins listening for pairing on its LAN interface, 60 s window.
-2. On node B: `steward join <code-or-qr> [host:port]` (mDNS `_steward._tcp` discovery
-   fills host:port on LAN). B connects to `/ws/pair` and runs the §3.3 handshake
-   **unauthenticated** (no signature verification yet — encrypted but unauthenticated
-   tunnel), then sends
-   `{ nodeId_B, name_B, proof: BLAKE2b-MAC(key = pairSecret, msg = th) }`
-   where `th` is the handshake transcript hash — binding the code to *this* tunnel, so
-   a MITM cannot splice.
-3. A verifies the MAC, replies with `{ nodeId_A, name_A, proof: MAC(pairSecret, th ‖ "A") }`,
-   both insert each other into `trusted_nodes`, and the pairing window closes.
+1. **URL/QR flow**: the pairing link carries A's full pubkey + a 128-bit single-use
+   token, so B's handshake is pinned to A's identity — MITM-proof by construction.
+2. **6-digit code flow** (2-minute TTL, 3 attempts fleet-wide): the code cannot pin a
+   pubkey, so it authenticates the *handshake transcript* instead. Both sides derive
+   `K = argon2id(code, saltA)` and exchange
+   `HMAC-SHA256(K, transcriptHash ‖ role)` — a MITM who relayed the handshake has a
+   different transcript on each side, so both MACs fail. argon2id makes offline guessing
+   of the low-entropy code costly within the window.
+3. On success both insert each other into `nodes`, and A streams the fleet roster
+   (transitive trust; single-user fleet).
 4. Both sides show the other's name + nodeId fingerprint (first 12 chars) for eyeball
    confirmation.
 
@@ -200,7 +181,7 @@ Cookies/DNS-rebinding/other-UID access must all fail closed.
 
 ### 4.1 Bootstrap token
 
-- First run: daemon writes 32 random bytes (base64url) to `~/.steward/auth-token`,
+- First run: daemon writes 32 random bytes (base64url) to `~/.steward/token`,
   mode 0600. Possession of this file ⇒ same UID ⇒ authorized (this is the same trust
   model as the Docker socket or `~/.ssh`).
 - `steward open` (and the installer's final step) reads the token and opens
@@ -230,15 +211,15 @@ CREATE TABLE ui_sessions (
 
 ### 4.3 Request hardening (all enforced in one Hono middleware, `src/daemon/http/auth.ts`)
 
-1. Listener binds `127.0.0.1` and `::1` only (peer channel is a separate LAN listener
-   speaking only `/ws/node` + `/ws/pair`).
+1. Listener binds `127.0.0.1` and `::1` only (the peer channel is the separate mesh
+   listener on 4778 speaking only `/api/peer`, §3.3).
 2. **Host header check**: must be `127.0.0.1:4777`, `localhost:4777`, or `[::1]:4777`
    — kills DNS-rebinding, which is otherwise fatal on localhost servers.
 3. **Origin check** on every non-GET and every WS upgrade: absent (CLI) or exactly the
    loopback origin — kills CSRF from arbitrary websites even before SameSite.
 4. Custom header `X-Steward-Csrf: 1` required on mutating routes (a cross-origin form
    can't set custom headers).
-5. Routes: everything under `/api/*` and `/ws/ui` requires a valid session cookie
+5. Routes: everything under `/api/*` (including the `/api/ws` upgrade) requires a valid session cookie
    **or** `Authorization: Bearer <file-token>` (CLI path). Static assets and
    `/api/auth/*` are the only exceptions.
 6. `steward auth reset` rotates the token file and deletes all `ui_sessions`.
@@ -377,7 +358,7 @@ There is deliberately **no** `/api/vault/unlock` — the daemon cannot unlock an
   (configurable 1 min–1 h, or "on tab hide"). Worker self-terminates; UI flips to the
   lock screen via the worker's `close` event.
 - Also locks on: tab `visibilitychange` → hidden for > 60 s (configurable), explicit
-  `⌘L`, and `steward vault lock` (broadcast over `/ws/ui` so every open tab locks).
+  `⌘L`, and `steward vault lock` (broadcast over `/api/ws` so every open tab locks).
 - The session cookie (§4) is unaffected — auto-lock is about vault keys, not UI auth.
 
 ### 5.7 Password generator (entirely client-side)
@@ -469,7 +450,7 @@ Edit in UI → worker encrypts with the item's ItemKey (new random nonce), bumps
 
 Written down so nobody oversells this later:
 
-1. **Root (or your own UID's malware) on any node.** They read `identity.json`, the
+1. **Root (or your own UID's malware) on any node.** They read `identity/node.key`, the
    token file, daemon memory, and can patch the served JS to capture the master
    password at next unlock. No local software can defend against its own administrator.
 2. **A compromised daemon on the machine where you type the master password** (T6):
@@ -485,22 +466,22 @@ Written down so nobody oversells this later:
 
 ## 9. File layout (implementation map)
 
+Paths follow the canonical codebase layout (ARCHITECTURE.md §2):
+
 ```
-src/daemon/
-  http/auth.ts          # §4 middleware: host/origin/CSRF/session checks
-  http/routes/auth.ts   # /api/auth/ticket, /api/auth/session
-  http/routes/vault.ts  # §5.4 routes (ciphertext CRUD, VV enforcement)
-  peer/identity.ts      # identity.json load/create, perm checks
-  peer/handshake.ts     # §3.3 (shared with browser? no — daemon-only)
-  peer/channel.ts       # framing, counters, rekey
-  peer/pairing.ts       # §3.5
-  peer/rpc.ts           # envelope router
-  vault/sync.ts         # §6.2 digest/want/rows
-src/ui/vault/
+src/daemon/auth.ts      # §4 middleware: host/origin/CSRF/session checks
+src/api/auth.ts         # /api/auth/ticket, /api/auth/session
+src/api/vault.ts        # §5.4 routes (ciphertext CRUD, VV enforcement)
+src/fleet/identity.ts   # identity/node.key load/create, perm checks
+src/fleet/handshake.ts  # §3.3 / FLEET.md §4.3 (daemon-only)
+src/fleet/link.ts       # framing, counters, rekey
+src/fleet/pairing.ts    # §3.5
+src/vault/sync.ts       # §6.2 digest/want/rows
+ui/src/routes/vault/
   vault.worker.ts       # all key material; argon2id, AEAD, generator
   api.ts                # ciphertext CRUD client
   components/…          # lock screen, item list, editor, conflict badge
-src/cli/
+src/cli/commands/
   pair.ts join.ts open.ts auth-reset.ts node-revoke.ts vault-lock.ts
 ```
 

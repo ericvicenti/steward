@@ -126,10 +126,10 @@ subscribed UI over WS, driving live container-list updates without polling.
 
 ### 1.3 HTTP API (v0 local, v1 adds `node` param)
 
-All under the daemon's Hono app. Every route takes `?node=<nodeId>`; omitted or
-`self` = local. For remote nodes the daemon forwards the request verbatim over the
-authenticated node channel (the fleet channel is the *only* path to a remote engine —
-remote Docker sockets are never exposed).
+All under the daemon's Hono app, operating on the **local** engine. Remote nodes use
+the canonical proxy route (`/api/nodes/:id/proxy/api/docker/...`, ARCHITECTURE.md §6.2):
+the daemon forwards the request verbatim over the authenticated node channel (the fleet
+channel is the *only* path to a remote engine — remote Docker sockets are never exposed).
 
 ```
 GET    /api/docker/engine                       → docker_engine row (live-probed)
@@ -158,32 +158,34 @@ name; the daemon passes them through — the engine resolves.
 
 ### 1.4 WebSocket protocol for logs / exec / progress
 
-One multiplexed WS at `GET /api/ws` (shared with the rest of Steward). Messages are
-JSON envelopes; binary payloads (terminal bytes) are base64 inside JSON for v0 —
-simple, and log volume doesn't justify binary framing yet. Revisit if profiling says so.
+One multiplexed WS at `GET /api/ws` (shared with the rest of Steward; base protocol in
+ARCHITECTURE.md §6.3). Docker adds **stream frames** to that protocol — same `t`
+discriminator, `id`-scoped like subscriptions. Binary payloads (terminal bytes) are
+base64 inside JSON for v0 — simple, and log volume doesn't justify binary framing yet.
+Revisit if profiling says so.
 
 Client → server:
 
 ```jsonc
-{ "op": "sub",  "topic": "docker.logs", "id": "s1",
+{ "t": "stream.open",  "id": "s1", "kind": "docker.logs",
   "params": { "node": "self", "container": "abc123", "tail": 500, "follow": true, "timestamps": true } }
-{ "op": "sub",  "topic": "docker.events", "id": "s2", "params": { "node": "self" } }
-{ "op": "exec.open", "id": "e1",
+{ "t": "stream.open",  "id": "s2", "kind": "docker.events", "params": { "node": "self" } }
+{ "t": "stream.open",  "id": "e1", "kind": "docker.exec",
   "params": { "node": "self", "container": "abc123", "cmd": ["/bin/sh"], "tty": true,
               "env": [], "workdir": null, "cols": 120, "rows": 32 } }
-{ "op": "exec.stdin",  "id": "e1", "data": "<base64>" }
-{ "op": "exec.resize", "id": "e1", "cols": 80, "rows": 24 }
-{ "op": "unsub", "id": "s1" }   // also closes execs
+{ "t": "stream.stdin",  "id": "e1", "data": "<base64>" }
+{ "t": "stream.resize", "id": "e1", "cols": 80, "rows": 24 }
+{ "t": "stream.close",  "id": "s1" }   // also closes execs
 ```
 
 Server → client:
 
 ```jsonc
-{ "op": "data",  "id": "s1", "stream": "stdout", "data": "<base64>", "ts": 1755500000000 }
-{ "op": "data",  "id": "e1", "stream": "stdout", "data": "<base64>" }
-{ "op": "event", "id": "s2", "event": { /* raw docker event */ } }
-{ "op": "closed","id": "e1", "exitCode": 0 }
-{ "op": "error", "id": "e1", "code": "container_not_running", "message": "..." }
+{ "t": "stream.data",  "id": "s1", "stream": "stdout", "data": "<base64>", "ts": 1755500000000 }
+{ "t": "stream.data",  "id": "e1", "stream": "stdout", "data": "<base64>" }
+{ "t": "stream.event", "id": "s2", "event": { /* raw docker event */ } }
+{ "t": "stream.closed","id": "e1", "exitCode": 0 }
+{ "t": "stream.err",   "id": "e1", "code": "container_not_running", "message": "..." }
 ```
 
 **Logs**: `GET /containers/:id/logs?follow=1&stdout=1&stderr=1&tail=N&timestamps=1`.
@@ -200,7 +202,7 @@ bidirectional bytes; resize via `POST /exec/:eid/resize?w=&h=`. On stream close,
 sub-channel on the node-to-node WS and relays envelopes verbatim; the remote daemon
 does the actual engine work. Backpressure: per-subscription bounded queue (256
 messages); on overflow drop oldest and send
-`{op:"data-gap", id, dropped:N}` so the UI can render a "output truncated" divider —
+`{t:"stream.data-gap", id, dropped:N}` so the UI can render a "output truncated" divider —
 never buffer unboundedly, never stall the shared WS.
 
 ### 1.5 Compose projects (v0 read-only, v1 control)
@@ -320,9 +322,9 @@ src/docker/
   prune.ts           # plan computation + execution
   routes.ts          # Hono routes under /api/docker
   ws.ts              # logs/exec/progress handlers for the shared WS
-src/ui/pages/docker/
-  ContainersPage.tsx ImagesPage.tsx VolumesPage.tsx ComposePage.tsx DiskPage.tsx
-  ContainerDetail.tsx  # tabs: overview | logs (xterm) | exec (xterm) | inspect JSON
+ui/src/routes/docker/     # per UX.md §14
+  index.tsx container.tsx ComposeCard.tsx LogPane.tsx DiskPage.tsx
+  # container detail tabs: overview | logs (xterm) | exec (xterm) | inspect JSON
 ```
 
 ---
@@ -352,19 +354,16 @@ Mirrors need an identity stable across path renames and across nodes. Rules:
    only when root commits match exactly *and* origin URLs match.
 3. Empty repos (no commits) get a repoid but can't be correlated; fine.
 
+Working-copy state per node lives in the canonical `repos` table (ARCHITECTURE.md §4.2,
+extended by INDEXING.md §9 — whose `identity` = sha1(sorted root commits) is the same
+correlation key used below). Git-sync adds:
+
 ```sql
-CREATE TABLE repo (
-  repo_id      TEXT PRIMARY KEY,        -- r_<ulid>
+CREATE TABLE repo_identity (
+  repo_id      TEXT PRIMARY KEY,        -- r_<ulid>, written to `git config steward.repoid`
   display_name TEXT NOT NULL,
   root_commits TEXT NOT NULL DEFAULT '[]',
   created_at   INTEGER NOT NULL
-);
-
-CREATE TABLE repo_checkout (             -- working copies, per node (indexer-owned)
-  node_id TEXT NOT NULL, path TEXT NOT NULL, repo_id TEXT NOT NULL,
-  head_ref TEXT, head_sha TEXT, dirty INTEGER, ahead INTEGER, behind INTEGER,
-  updated_at INTEGER NOT NULL,
-  PRIMARY KEY (node_id, path)
 );
 
 CREATE TABLE repo_mirror (

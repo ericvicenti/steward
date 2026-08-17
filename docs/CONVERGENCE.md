@@ -60,7 +60,7 @@ workspace/path dependency; see §3).
 // steward/src/facets/types.ts
 
 export type Platform = "darwin" | "linux";
-export type Role = "laptop" | "desktop" | "server";
+export type Role = "laptop" | "desktop" | "server" | "backup";  // shared node-role enum (ARCHITECTURE §10, FLEET §2.4)
 export type Danger = "safe" | "caution" | "destructive";
 
 export interface Change {
@@ -83,7 +83,7 @@ export interface Change {
 export interface FacetCtx {
   platform: Platform;
   role: Role;
-  nodeId: string;          // this node's ed25519 pubkey id
+  nodeId: string;          // "stw1…" pubkey-derived node id (FLEET.md §2.2)
   hostname: string;
   home: string;            // absolute $HOME
   profileDir: string;      // ~/.steward/profile
@@ -267,12 +267,12 @@ manifest entry is inert even if its state files exist.
 ```json
 {
   "m4max": {
-    "nodeId": "ed25519:base32...",
+    "nodeId": "stw1k7f3q2xa...",
     "role": "laptop",
     "platform": "darwin",
     "tags": ["personal", "primary"]
   },
-  "hetzner1": { "nodeId": "ed25519:...", "role": "server", "platform": "linux", "tags": [] }
+  "hetzner1": { "nodeId": "stw1abc...", "role": "server", "platform": "linux", "tags": [] }
 }
 ```
 
@@ -563,8 +563,9 @@ not an error.
 
 ## 9. Fleet API & CLI surface
 
-All routes on the Hono server (localhost:4777); remote nodes reached by proxying over the
-authenticated node channel with `?node=<nodeId>` (pattern shared with the rest of Steward).
+All routes on the Hono server (localhost:4777); remote nodes reached via the canonical
+proxy route `/api/nodes/:id/proxy/*` over the authenticated node channel (ARCHITECTURE.md
+§6.2 — pattern shared with the rest of Steward).
 
 ```
 GET  /api/facets                     → [{name, platform-applicable, status, driftCount,

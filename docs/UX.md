@@ -33,7 +33,7 @@ them). Tailwind v4 `@theme` maps them to utilities. All pairs meet WCAG AA again
 intended surface.
 
 ```css
-/* app/src/styles/tokens.css */
+/* ui/src/styles/tokens.css */
 :root {
   /* Surfaces — cool near-black, stepped, never pure #000 */
   --bg-base:     #0b0d10;  /* app background */
@@ -230,7 +230,7 @@ params so URLs are shareable between your own machines.
 
 ## 4. Core components (shared vocabulary)
 
-Built on Radix primitives + Tailwind; live in `app/src/components/ui/`.
+Built on Radix primitives + Tailwind; live in `ui/src/components/ui/`.
 
 - **`StatusDot`** — 8px circle, colors from status tokens; `pulse` prop for in-progress
   (info) only.
@@ -526,8 +526,9 @@ Whole route renders a centered card (max-width 380px) on `--bg-base`:
   tertiary "What is stored where?" link → explainer popover: items are ciphertext in
   SQLite, synced between nodes as ciphertext; the derived key lives only in page memory
   and is zeroed on lock.
-- First-run variant: "Create your vault" — password + confirm + generated 6-word recovery
-  phrase displayed once with a "I stored this safely" checkbox gate.
+- First-run variant: "Create your vault" — password + confirm, entropy meter, and an
+  offered generated 6-word diceware passphrase (SECURITY.md §7.1). No recovery mechanism
+  exists by design; the copy says so plainly ("There is no reset. Store this password.").
 
 ### 10.2 Unlocked — item list
 
@@ -664,26 +665,25 @@ are incomplete.
 
 ### 13.1 Live updates over WebSocket
 
-Single multiplexed WS at `/api/ws`. Message envelope:
+Single multiplexed WS at `/api/ws`, speaking the protocol defined in ARCHITECTURE.md
+§6.3 (canonical). Envelope:
 
 ```ts
 type WsMsg =
-  | { t: "hello"; nodeId: string; stateSeq: number }
-  | { t: "sub"; topics: string[] }                     // client → server
-  | { t: "event"; topic: string; seq: number; data: unknown }
-  | { t: "job"; jobId: string; kind: string;           // long-running ops
-      state: "queued"|"running"|"done"|"failed";
-      progress?: { done: number; total: number; unit: "bytes"|"files"|"steps" };
-      log?: string }                                   // incremental log lines
-  | { t: "resync"; sinceSeq: number };                 // client → server after reconnect
+  | { t: "auth"; token: string }                       // client → server, first message
+  | { t: "sub"; topics: string[]; since?: number }     // glob topics; since = event seq replay
+  | { t: "unsub"; topics: string[] }
+  | { t: "event"; seq: number; topic: string; payload: unknown }
+  | { t: "err"; code: "AUTH_REQUIRED" | "SEQ_TOO_OLD" };
 ```
 
-Topics mirror the query keys: `fleet`, `node:<id>`, `data:<setId>`, `repo:<nodeId>/<id>`,
-`docker:<nodeId>`, `setup`, `activity`. The client (TanStack Query) subscribes to topics
-for mounted routes; `event` messages carry either a patch or a version bump that
-invalidates the matching query key. Sequence numbers let the client detect gaps →
-`resync` → server replays or instructs full refetch. Everything on screen is live;
-there are **no refresh buttons anywhere in the app**.
+Topics follow the daemon's dot taxonomy (ARCHITECTURE §7): `job.*`, `scan.*`, `repo.*`,
+`node.*`, `backup.*`, `redundancy.changed`, `vault.changed`, `system.*` — payloads carry
+object ids, and the client filters/fans out to query keys. Job-tray state is driven by
+`job.queued|started|progress|done|failed` events. The client (TanStack Query) fetches a
+REST snapshot, reads its `X-Steward-Seq` header, then subscribes `since` that seq —
+nothing is missed across reconnects; `SEQ_TOO_OLD` triggers a full refetch. Everything
+on screen is live; there are **no refresh buttons anywhere in the app**.
 
 ### 13.2 Optimistic UI — tiered by risk
 
@@ -738,8 +738,10 @@ always visible: 2px `--border-focus` ring, 2px offset, on every interactive elem
 
 ## 14. Frontend architecture & file layout
 
+The UI lives at `ui/` in the repo (ARCHITECTURE.md §2), built to `dist/ui`:
+
 ```
-app/
+ui/
   index.html
   vite.config.ts            # dev proxy → http://localhost:4777
   src/
@@ -761,15 +763,16 @@ app/
       files/  (browser.tsx, PreviewDrawer.tsx, MillerColumns.tsx)
       repos/  (board.tsx, repo/[changes|history|branches].tsx, CommitBox.tsx)
       docker/ (index.tsx, container.tsx, ComposeCard.tsx, LogPane.tsx)
-      vault/  (index.tsx, Unlock.tsx, ItemDetail.tsx, Generator.tsx, crypto.worker.ts)
+      vault/  (index.tsx, Unlock.tsx, ItemDetail.tsx, Generator.tsx, vault.worker.ts)
       setup/  (matrix.tsx, node.tsx, facet.tsx, DriftDrawer.tsx)
       steward/(index.tsx, Pairing.tsx, DaemonLog.tsx)
 ```
 
 Libraries (final): React 19, `react-router` (data routers), `@tanstack/react-query` +
 `react-virtual` + `react-table`, Radix primitives, `cmdk`, `lucide-react`, Shiki
-(singleton highlighter, custom theme from tokens), `xterm` (docker shell), argon2 WASM in
-`crypto.worker.ts`. No CSS-in-JS; Tailwind utilities + the token sheet only. Charts are
+(singleton highlighter, custom theme from tokens), `xterm` (docker shell), libsodium
+WASM (argon2id + XChaCha20, per SECURITY.md §2) in `vault.worker.ts`. No CSS-in-JS;
+Tailwind utilities + the token sheet only. Charts are
 hand-rolled SVG sparklines/bars using `--chart-*` (no chart library; nothing here needs
 one).
 

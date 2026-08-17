@@ -83,7 +83,8 @@ WantedBy=default.target
 set -euo pipefail
 STEWARD_HOME="${STEWARD_HOME:-$HOME/.steward}"
 CURRENT="$STEWARD_HOME/current"          # symlink -> checkouts/<sha> (see §9)
-BUN="$STEWARD_HOME/bin/bun"              # pinned bun, vendored by installer
+[ -f "$STEWARD_HOME/env" ] && . "$STEWARD_HOME/env"   # KEY=VALUE incl. STEWARD_BUN (INSTALL.md §2.1)
+BUN="${STEWARD_BUN:-$HOME/.bun/bin/bun}" # shared bun, absolute path pinned at install
 exec "$BUN" "$CURRENT/src/daemon/main.ts"
 ```
 
@@ -195,6 +196,7 @@ singletons except the logger. This keeps jobs testable with an in-memory SQLite.
 ```
 ~/.steward/
 ├── config.json                # §10
+├── env                        # KEY=VALUE (STEWARD_BUN, STEWARD_PORT, …), see INSTALL.md §2.1
 ├── steward.db  (+ -wal/-shm)
 ├── daemon.lock
 ├── daemon.json                # runtime manifest {pid, port, version, gitSha}
@@ -214,10 +216,13 @@ singletons except the logger. This keeps jobs testable with an in-memory SQLite.
 │   ├── ab12cd3/               # git worktree at that sha, with dist/ui built
 │   └── 9f00e21/
 └── bin/
-    ├── steward                # CLI shim (exec bun $CURRENT/src/cli/main.ts "$@")
-    ├── steward-daemon-shim
-    └── bun                    # pinned bun binary
+    ├── steward                # CLI shim (exec $STEWARD_BUN $CURRENT/src/cli/main.ts "$@")
+    └── steward-daemon-shim
 ```
+
+Bun itself is **not** vendored here: it lives at the standard `~/.bun/bin/bun`, with the
+absolute path pinned as `STEWARD_BUN` in `~/.steward/env` (see INSTALL.md §2 — sharing the
+user's bun avoids duplicate runtimes and keeps the macOS Full Disk Access grant on one binary).
 
 Note on BRIEF's `~/.steward/src/`: we keep that path as a symlink to `current` so docs and
 muscle memory hold, but the real mechanism is `checkouts/<sha>` + atomic symlink swap,
@@ -244,14 +249,14 @@ which is what makes rollback safe (§9).
 ```sql
 -- Every machine in the fleet, including self (is_self = 1, exactly one row).
 CREATE TABLE nodes (
-  id            TEXT PRIMARY KEY,           -- ulid, minted at install
+  id            TEXT PRIMARY KEY,           -- nodeId = "stw1" + base32(ed25519 pubkey), see FLEET.md §2.2
   pubkey        TEXT NOT NULL UNIQUE,       -- ed25519, base64
   name          TEXT NOT NULL,              -- "erics-mbp", editable
   is_self       INTEGER NOT NULL DEFAULT 0,
   os            TEXT NOT NULL,              -- 'darwin' | 'linux'
   arch          TEXT NOT NULL,
-  roles         TEXT NOT NULL DEFAULT '[]', -- JSON: ["workstation","backup"]
-  endpoints     TEXT NOT NULL DEFAULT '[]', -- JSON: ["192.168.1.10:4777","host.ts.net:4777"]
+  roles         TEXT NOT NULL DEFAULT '[]', -- JSON, from {"laptop","desktop","server","backup"}
+  endpoints     TEXT NOT NULL DEFAULT '[]', -- JSON mesh addrs: ["192.168.1.10:4778","host.ts.net:4778"]
   version       TEXT,                       -- steward version last seen
   paired_at     INTEGER NOT NULL,
   last_seen_at  INTEGER,
@@ -320,7 +325,10 @@ CREATE TABLE files (
   size          INTEGER NOT NULL,
   mtime_ms      INTEGER NOT NULL,
   inode         INTEGER,
-  class         TEXT NOT NULL,              -- 'novel'|'derivable'|'ignored' (§5.5)
+  class         TEXT NOT NULL,              -- 'novel'|'derivable'|'ignored' (§5.5); indexing
+                                            -- migrations extend this enum with subclasses
+                                            -- novel-secret/novel-suspect/derivable-remote/
+                                            -- derivable-refetch (see INDEXING.md §4)
   class_reason  TEXT,                       -- rule that matched, e.g. 'node_modules'
   repo_id       TEXT REFERENCES repos(id),  -- containing repo, if any
   git_tracked   INTEGER,                    -- NULL if not in a repo
@@ -408,15 +416,27 @@ CREATE TABLE events (
 );
 CREATE INDEX events_topic ON events(topic, seq);
 
--- Vault: ciphertext only; the daemon never sees plaintext or keys (crypto in UI).
+-- Vault: ciphertext only; the daemon never sees plaintext or keys (crypto lives in a
+-- browser Web Worker — XChaCha20-Poly1305 + argon2id, full design in SECURITY.md §5).
+CREATE TABLE vault_header (                 -- exactly one row per vault; synced
+  vault_id        TEXT PRIMARY KEY,
+  kdf             TEXT NOT NULL,            -- JSON argon2id params + salt
+  key_generation  INTEGER NOT NULL,         -- bumped on password rotation
+  wrapped_vault_key BLOB NOT NULL,
+  verifier        BLOB NOT NULL,
+  updated_at      INTEGER NOT NULL,
+  updated_by      TEXT NOT NULL             -- nodeId
+);
 CREATE TABLE vault_items (
-  id            TEXT PRIMARY KEY,
-  kind          TEXT NOT NULL,              -- 'password'|'note'|'key'|'env'
-  name_ct       TEXT NOT NULL,              -- encrypted name (AES-GCM, argon2id key)
-  body_ct       TEXT NOT NULL,
-  updated_at    INTEGER NOT NULL,
-  deleted       INTEGER NOT NULL DEFAULT 0, -- tombstone for sync
-  rev           TEXT NOT NULL               -- ulid; last-writer-wins across nodes
+  item_id         TEXT PRIMARY KEY,         -- uuidv7
+  key_generation  INTEGER NOT NULL,
+  wrapped_item_key BLOB NOT NULL,
+  ciphertext      BLOB NOT NULL,            -- includes the encrypted title; daemon sees nothing
+  version_vector  TEXT NOT NULL,            -- JSON {"<nodeId>": counter}; concurrent edits
+                                            -- keep both rows (SECURITY.md §6) — never silent LWW
+  deleted         INTEGER NOT NULL DEFAULT 0,
+  updated_at      INTEGER NOT NULL,
+  updated_by      TEXT NOT NULL
 );
 ```
 
@@ -485,7 +505,8 @@ running is a no-op returning the existing job id.
 The `Scheduler` (30s tick) reads schedules from config (§10) and enqueues with dedupe keys.
 Defaults: full scan of each root every 6h, repo audit sweep every 1h, backup per policy,
 blob verify (re-stat + spot-hash of `blob_locations`) weekly, update check daily.
-Filesystem watcher events also enqueue targeted scans (debounced 30s per directory subtree).
+Filesystem watcher events also enqueue targeted scans (coalesced dirty-set debounce —
+quiet 5s / dirty 60s, see INDEXING.md §2.5).
 
 ### 5.4 Resumability
 
@@ -541,10 +562,12 @@ hashes but scans must be fast (300 project dirs ≈ minutes, not hours).
 
 - Base: `http://127.0.0.1:4777/api`. UI static assets at `/` (Hono `serveStatic` from
   `$CURRENT/dist/ui`, SPA fallback to `index.html`).
-- Auth: `Authorization: Bearer <token>` where token is `~/.steward/token` (created at
-  install, shown to the UI via the CLI's `steward open` which passes it in the URL fragment
-  once; UI persists in localStorage). Node-to-node requests authenticate via the WS session
-  (§6.4) — never via the bearer token.
+- Auth, two callers (full design in SECURITY.md §4): **CLI** sends
+  `Authorization: Bearer <token>` where token is the 0600 file `~/.steward/token`;
+  **browser** exchanges that token (via `steward open`) for a 30s one-time ticket, then a
+  `HttpOnly SameSite=Strict` session cookie — the long-lived token never enters the page.
+  All requests pass Host/Origin checks (DNS-rebinding/CSRF). Node-to-node requests
+  authenticate via the peer channel session (§6.4) — never via the bearer token.
 - Errors: `{error: {code: "REPO_NOT_FOUND", message, details?}}` with proper HTTP status.
 - All list endpoints accept `?limit=&cursor=` (cursor = last ULID) and return
   `{items, nextCursor}`.
@@ -553,9 +576,10 @@ hashes but scans must be fast (300 project dirs ≈ minutes, not hours).
 
 | Method | Path | Body / params | Returns |
 |---|---|---|---|
-| GET | `/api/system/health` | — | `{ok, version, gitSha, uptimeMs, db: {sizeBytes}, jobs: {queued, running}}` |
+| GET | `/api/system/health` | — | `{app: "steward", ok, version, gitSha, uptimeMs, db: {sizeBytes}, jobs: {queued, running}}` — the `"app":"steward"` marker is how the installer distinguishes an old steward from a foreign listener (INSTALL.md §3/§8) |
 | GET | `/api/system/version` | — | `{version, gitSha, builtAt, channel}` |
 | POST | `/api/system/update` | `{ref?}` | enqueues `update` job → `{jobId}` |
+| POST | `/api/system/restart` | — | daemon finishes in-flight work, exits 64 (supervisor relaunches) |
 | GET | `/api/system/logs` | `?level=&since=&limit=` | `{items: LogLine[]}` (from ring buffer + file tail) |
 | GET | `/api/config` | — | redacted config (no secrets) |
 | PATCH | `/api/config` | JSON merge patch | new config (validated, then written to disk) |
@@ -593,16 +617,18 @@ hashes but scans must be fast (300 project dirs ≈ minutes, not hours).
 | GET | `/api/snapshots` | `?target=` | snapshot list |
 | POST | `/api/backups/run` | `{target, toNodes?: string[]}` | `{jobId}` |
 | GET | `/api/backups/policy` | — | policies from config |
-| GET | `/api/docker/containers` | — | `docker ps -a --format json` parsed |
+| GET | `/api/docker/containers` | — | live list via Docker Engine HTTP API over the unix socket (never the `docker` CLI); full docker route set in DOCKER-CI.md §1.3 |
 | POST | `/api/docker/containers/:id/:action` | action ∈ start/stop/restart/rm | ok |
 | GET | `/api/docker/images` \| `/compose` | — | images / compose project status |
-| GET | `/api/vault/items` | — | `{items: {id, kind, name_ct, rev, updated_at}[]}` |
-| GET | `/api/vault/items/:id` | — | full ciphertext item |
-| PUT | `/api/vault/items/:id` | `{kind, name_ct, body_ct, rev}` | conflict-checked upsert |
+| GET | `/api/vault/header` | — | vault header row (kdf params, key_generation) |
+| PUT | `/api/vault/header` | header row | create / rotate (SECURITY.md §7) |
+| GET | `/api/vault/items` | `?since=` | ciphertext rows `{item_id, key_generation, wrapped_item_key, ciphertext, version_vector, deleted, updated_at}[]` |
+| PUT | `/api/vault/items/:id` | encrypted row + bumped version_vector | 409 with current row if VV conflicts (client merges & retries) |
 | DELETE | `/api/vault/items/:id` | — | tombstone |
+| ANY | `/git/:nodeId/:repoId.git/*` | git smart-HTTP | local mirrors served via `git http-backend`; remote nodes proxied over the peer channel (DOCKER-CI.md §2.3) |
 | GET | `/api/events` | `?since=<seq>&topics=` | replay from event log (catch-up REST) |
 | GET (WS) | `/api/ws` | — | live event stream (§6.3) |
-| GET (WS) | `/api/peer` | — | node-to-node channel (§6.4) |
+| GET (WS) | `/api/peer` | — | node-to-node channel (§6.4) — served on the **mesh listener** `0.0.0.0:4778`, not the loopback HTTP server |
 
 ### 6.3 UI WebSocket protocol (`/api/ws`)
 
@@ -629,11 +655,13 @@ with `since = snapshot's seq header` (`X-Steward-Seq` on every REST response) �
 
 ### 6.4 Node-to-node channel (`/api/peer`)
 
-Outbound-dialed WS from each node to each paired peer (both directions attempted; one
-surviving socket is enough — deterministic tiebreak by pubkey ordering closes duplicates).
-Handshake: Noise `XX`-style over the socket using the ed25519 identities (converted to
-x25519 for DH); peers must already be in `nodes` (pairing established trust). After
-handshake, the channel carries multiplexed frames:
+The mesh listener binds `0.0.0.0:4778` and speaks only this channel (the loopback server
+on 4777 never leaves the machine — see FLEET.md §4.1). Outbound-dialed WS from each node
+to each paired peer (deterministic dial direction — smaller nodeId dials; crossed connects
+close the duplicate). Handshake: Noise `XX`-style over the socket using the ed25519
+identities (converted to x25519 for DH); peers must already be in `nodes` (pairing
+established trust). Wire format is normative in FLEET.md §4.3. After handshake, the
+channel carries multiplexed frames:
 
 ```
 {"ch":"rpc","id":"…","req":{method,path,headers,body}}   // powers /api/nodes/:id/proxy
@@ -737,8 +765,9 @@ until a newer sha appears, so we don't crash-loop through the same bad version d
 ### 9.4 Dev mode
 
 `steward daemon run --dev` skips the shim/symlink machinery, runs from the working
-checkout with `--watch`, uses port 4778 and `~/.steward-dev/` so the real daemon keeps
-running. Guardrail: self-update refuses to run when the active checkout is dirty.
+checkout with `--watch`, uses ports 4779 (HTTP) / 4780 (mesh; 4778 belongs to the real
+daemon) and `~/.steward-dev/` so the real daemon keeps running. Guardrail: self-update
+refuses to run when the active checkout is dirty.
 
 ---
 
@@ -754,10 +783,10 @@ pointing at a schema file in the checkout for editor autocomplete).
   "$schema": "./current/schema/config.schema.json",
   "node": {
     "name": "erics-mbp",                 // default: hostname
-    "roles": ["workstation"]             // "workstation" | "backup" | "server"
+    "roles": ["laptop"]                  // "laptop" | "desktop" | "server" | "backup"
   },
   "server": {
-    "port": 4777,                        // localhost bind only; not configurable to 0.0.0.0
+    "port": 4777,                        // localhost bind only; mesh listens on 4778 (FLEET.md §4.1)
     "openUiOnStart": false
   },
   "scan": {
@@ -779,7 +808,7 @@ pointing at a schema file in the checkout for editor autocomplete).
   },
   "fleet": {
     "peers": [                            // informational cache; source of truth is DB
-      { "name": "backup-tower", "endpoints": ["tower.ts.net:4777"] }
+      { "name": "backup-tower", "endpoints": ["tower.ts.net:4778"] }
     ],
     "heartbeatSeconds": 20
   },
@@ -806,5 +835,5 @@ artifact for machine convergence ("facets" will later template this file).
   no longer exists" (origin 404). Likely a slow weekly `git ls-remote` sweep, opt-in.
 - FastCDC in pure TS vs. a small native addon — start pure TS, benchmark on the ~300-repo
   corpus.
-- Vault sync conflict UX beyond last-writer-wins (rev vector per item) — deferred until
-  multi-node vault editing actually happens.
+- ~~Vault sync conflict handling~~ — resolved: per-item version vectors with
+  conflict-copy semantics (SECURITY.md §6).

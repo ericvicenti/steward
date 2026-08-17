@@ -43,7 +43,7 @@ Each node generates an ed25519 keypair on first boot:
 
 ```
 nodeId = "stw1" + base32nopad(ed25519_pubkey)        // 4 + 52 = 56 chars, lowercase
-shortId = first 8 chars after prefix                  // for logs/UI, e.g. "stw1-k7f3q2xa…"
+shortId = first 8 chars after prefix                  // for logs/UI, e.g. "stw1k7f3q2xa…"
 ```
 
 - The nodeId **is** the public key. There is no separate registry; possession of the
@@ -75,7 +75,7 @@ Two flows, both initiated from the web UI of an already-running node:
 ### 3.1 Flow A — URL / QR (preferred, MITM-proof)
 
 1. On node A's UI: **Fleet → Add node → Show pairing link**. A calls
-   `POST /api/pair/offer` locally, which mints:
+   `POST /api/nodes/pairing/start` locally, which mints:
 
 ```jsonc
 // pairing offer (encoded into URL + QR)
@@ -103,7 +103,7 @@ Two flows, both initiated from the web UI of an already-running node:
 For when you can see A's screen but can't paste a URL (fresh headless box, phone-less).
 
 1. Node A UI shows: `Pairing code: 481-905` and its LAN addresses. Internally A calls
-   `POST /api/pair/offer {"mode":"code"}` → 6-digit code, 2-minute TTL, max **3** failed
+   `POST /api/nodes/pairing/start {"mode":"code"}` → 6-digit code, 2-minute TTL, max **3** failed
    attempts fleet-wide before the code is invalidated.
 2. Node B: `steward pair --code 481905 [--host 192.168.1.20]`. Without `--host`, B mDNS-
    browses for pairable Steward nodes (§4.1) and tries each.
@@ -135,7 +135,7 @@ within one gossip round. A also pushes B's record proactively to its connected p
 
 ### 3.4 Unpairing / revocation
 
-`DELETE /api/fleet/nodes/:nodeId` on any node publishes a signed **revocation** into
+`DELETE /api/nodes/:id` on any node publishes a signed **revocation** into
 gossip:
 
 ```jsonc
@@ -177,9 +177,11 @@ again. Any fleet member may revoke any other — acceptable for a single-user fl
 - Reconnect with decorrelated jitter backoff: 1 s → cap 60 s. Heartbeat: transport-level
   `ping` every 15 s, drop link after 2 missed pongs (45 s).
 
-### 4.3 Handshake (Noise-IK-style over WebSocket)
+### 4.3 Handshake (Noise-XX-style over WebSocket)
 
-The dialer opens `ws://host:4778/` and the two sides exchange **binary** messages
+This section is the **normative wire format** for the peer channel (ARCHITECTURE.md §6.4,
+SECURITY.md §3.3 defer here). The dialer opens `ws://host:4778/api/peer` and the two
+sides exchange **binary** messages
 (everything after the handshake is encrypted frames; JSON lives inside them, §5).
 
 Notation: `sA/sB` static X25519 (derived §2.3), `eA/eB` ephemeral X25519,
@@ -204,13 +206,15 @@ cert  = { EdX_pub, sX_pub, sig: Ed25519-sign(EdX_priv, "stw-bind" || sX_pub || e
   `crypto_secretstream`), which handles nonces and rekeying-by-chunk for us.
 - `transcriptHash = SHA-256(M1 || M2 || M3)` — this is the value the pairing code MAC
   (§3.2) signs over.
-- **Trust check**: after M3 each side looks up the peer's `EdX_pub` in `trusted_peers`.
-  Unknown peer + no live pairing offer → close with code `4403`. Unknown peer + live
-  pairing offer → allow only `pair.*` messages until pairing completes.
+- **Trust check**: after M3 each side looks up the peer's `EdX_pub` in the `nodes` table
+  (ARCHITECTURE.md §4.2; status must not be `revoked`). Unknown peer + no live pairing
+  offer → close with code `4403`. Unknown peer + live pairing offer → allow only `pair.*`
+  messages until pairing completes.
 - Why not TLS: no CA story for LAN nodes; self-signed cert pinning is just a worse
   version of this with x509 parsing attack surface. Why not raw Noise lib: the pattern
-  above *is* Noise-IK in spirit; writing it with libsodium primitives (~150 lines) avoids
-  a native dependency and keeps the transcript hash accessible for pairing.
+  above is Noise-XX in spirit (mutual static auth via signatures over the transcript);
+  writing it with libsodium primitives (~150 lines) avoids a native dependency and keeps
+  the transcript hash accessible for pairing.
 
 ### 4.4 Encrypted frame layer
 
@@ -246,9 +250,11 @@ through B. B forwards ciphertext it cannot read.
 
 ## 5. RPC protocol
 
-JSON frames on channel `0x01`. One protocol for node↔node **and** browser↔local-daemon
-(the UI talks the same RPC over `ws://127.0.0.1:4777/ws`, minus the crypto — localhost
-trust, see §10).
+JSON frames on channel `0x01`, node↔node. The browser does **not** speak these frames
+directly — the UI uses the REST API plus the `/api/ws` event stream (ARCHITECTURE.md
+§6.2–6.3); remote operations go through `/api/nodes/:id/proxy/*`, which the local daemon
+translates into these RPC frames. The zod-backed **method registry is shared**: REST
+handlers and remote `Req` frames dispatch into the same caller-agnostic handlers.
 
 ### 5.1 Frame schemas
 
@@ -330,8 +336,9 @@ if you had opened C's own UI. Concretely, two mechanisms:
 
 ### 6.1 RPC proxying (primary)
 
-The UI addresses every RPC call with a node scope. Local WS frames from the browser get
-an optional `dst`:
+The UI addresses every call with a node scope: requests to another node hit
+`/api/nodes/:id/proxy/*` (ARCHITECTURE.md §6.2) on the local daemon, whose router turns
+them into RPC frames with a `dst` field:
 
 ```jsonc
 { "t": "req", "id": "01J…", "dst": "stw1…C", "m": "git.status", "p": { "repo": "~/Code/Seed" } }
@@ -356,14 +363,14 @@ Some things want real HTTP: downloading a file from C, streaming a container log
 new tab, serving C's raw UI. Node A exposes, on **localhost only**:
 
 ```
-ANY /api/nodes/:nodeId/http/*  →  tunneled to C, replayed against C's 127.0.0.1:4777/*
+ANY /api/nodes/:id/proxy/*  →  tunneled to C, replayed against C's 127.0.0.1:4777/*
 ```
 
 Implementation: `m:"http.proxy"` RPC carrying `{method, path, headers (allowlist), body?}`
 with chunked response events over a `Sub` for streaming bodies. C's Hono app processes it
 as a normal request with header `x-steward-caller: <A's nodeId>`. Size cap 512 MB, then
 use the bulk channel. This also gives us "open node C's full UI in a tab" for free:
-`http://127.0.0.1:4777/api/nodes/stw1…C/http/` (C's UI assets proxied through A) — useful
+`http://127.0.0.1:4777/api/nodes/stw1…C/proxy/` (C's UI assets proxied through A) — useful
 when C is mid-upgrade and its RPC surface is older than A's UI expects.
 
 ### 6.3 Authorization
@@ -415,7 +422,7 @@ Big data (file index detail, blobs) does **not** gossip. Peer records carry comp
 ```
 
 Canonicalization: JCS (RFC 8785). Records with bad signatures or `nodeId` not in
-`trusted_peers` are dropped (except during pairing roster import, which trusts A's link).
+the `nodes` table are dropped (except during pairing roster import, which trusts A's link).
 
 The record is republished (seq++) on: any field change, index rescan completion, link
 set change (debounced 5 s), and at minimum every 10 minutes as a liveness heartbeat.
@@ -435,8 +442,8 @@ DHT:
 - On link establishment: immediate digest exchange (so a returning laptop syncs in one
   round trip).
 - Storage: `peer_records(node_id TEXT PRIMARY KEY, seq INTEGER, record JSON, sig BLOB,
-  received_at INTEGER)` — plus `trusted_peers(node_id TEXT PRIMARY KEY, added_at, added_via,
-  revoked_at INTEGER NULL, revoked_by TEXT NULL)`.
+  received_at INTEGER)`. The trust root itself is the canonical `nodes` table
+  (ARCHITECTURE.md §4.2): pairing inserts rows, revocation sets `status='revoked'`.
 
 Convergence: with full mesh, push alone converges in one hop; the pull loop exists for
 partitioned/relay topologies and missed frames. Eventual consistency window in practice:
@@ -500,11 +507,9 @@ Kept deliberately boring:
   reverse-proxy mode. Remote UI access to node C is "open any fleet node's UI and proxy"
   (§6) — the WAN story is tailscale/WireGuard addresses in `addrs`, which BRIEF names as
   the intended connectivity layer. Steward never does its own WAN hole-punching in v1.
-- **Localhost UI trust:** v1 trusts localhost (single-user machine), with two mitigations:
-  strict CORS (only `http://127.0.0.1:4777` origin; WS upgrade rejects browser origins
-  that don't match, which blocks drive-by websites hitting the local API), and CSRF-safe
-  design (no state-changing GET). A per-install browser session token
-  (`~/.steward/ui-token`, injected by the CLI `steward open`) is a fast-follow.
+- **Localhost UI trust:** browser and CLI auth against the loopback API (0600
+  `~/.steward/token` → one-time ticket → HttpOnly session cookie, plus Host/Origin/CSRF
+  checks) is specified in SECURITY.md §4; the mesh never relies on it.
 - **Key hygiene:** `node.key` is `0600`, excluded from Steward's own backup indexing by
   hardcoded rule (identity must not replicate — that's how clones happen). Vault master
   key material never touches this layer; the fleet moves vault **ciphertext** only.
