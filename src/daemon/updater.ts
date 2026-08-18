@@ -46,9 +46,11 @@ export async function applyUpdate(): Promise<{ ok: boolean; detail: string }> {
   try {
     const pull = await run(["git", "pull", "--ff-only", "--quiet", "origin", "main"]);
     if (pull.code !== 0) throw new Error(`git pull failed: ${pull.err.slice(0, 300)}`);
-    const install = await run(["bun", "install"]);
+    // The service's PATH (launchd/systemd) may not include bun; we ARE bun.
+    const bun = process.execPath;
+    const install = await run([bun, "install"]);
     if (install.code !== 0) throw new Error(`bun install failed: ${install.err.slice(0, 300)}`);
-    const build = await run(["bun", "run", "build"]);
+    const build = await run([bun, "run", "build"]);
     if (build.code !== 0) throw new Error(`build failed: ${build.err.slice(0, 300)}`);
     const target = await run(["git", "rev-parse", "--short", "HEAD"]);
     bus.emit({ kind: "update:restarting", commit: target.out });
