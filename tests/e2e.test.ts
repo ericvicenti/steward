@@ -52,7 +52,7 @@ beforeAll(async () => {
   play = mkdtempSync(join(homedir(), ".steward-e2e-play-"));
   writeFileSync(
     join(stewardHome, "config.json"),
-    JSON.stringify({ nodeName: "e2e-node", port: PORT, bind: "127.0.0.1", roots: [play], dataRoots: [join(play, "userdata")], cacheDirs: ["Caches"], watch: false, junkDirs: ["node_modules"], skipDirs: [".git"], scanDepth: 2 })
+    JSON.stringify({ nodeName: "e2e-node", port: PORT, bind: "127.0.0.1", roots: [play], dataRoots: [join(play, "userdata")], cacheDirs: ["Caches"], watch: false, autoUpdate: false, junkDirs: ["node_modules"], skipDirs: [".git"], scanDepth: 2 })
   );
   writeFileSync(join(play, "readme.md"), "# playground\n");
   writeFileSync(join(play, "script.ts"), "export const x = 1\n");
@@ -305,7 +305,7 @@ test("fleet: pair a second node via the UI and browse it", async () => {
   writeFileSync(join(home2, "node-id"), "stw-e2e-two");
   writeFileSync(
     join(home2, "config.json"),
-    JSON.stringify({ nodeName: "second-box", port: 4796, bind: "127.0.0.1", roots: [], dataRoots: [], watch: false, junkDirs: [], skipDirs: [], scanDepth: 1 })
+    JSON.stringify({ nodeName: "second-box", port: 4796, bind: "127.0.0.1", roots: [], dataRoots: [], watch: false, autoUpdate: false, junkDirs: [], skipDirs: [], scanDepth: 1 })
   );
   daemon2 = Bun.spawn(["bun", "run", join(ROOT, "src/daemon/main.ts")], {
     env: { ...process.env, STEWARD_HOME: home2 },

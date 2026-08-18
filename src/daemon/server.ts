@@ -12,6 +12,7 @@ import { registerFsRoutes } from "./api/fs";
 import { createTermHandlers } from "./api/term";
 import { registerFleetRoutes } from "./api/fleet";
 import { registerMediaRoutes, cleanupHlsCache } from "./api/media";
+import { currentCommit, checkForUpdate, applyUpdate, isUpdating } from "./updater";
 
 const UI_DIST = join(import.meta.dir, "../../dist/ui");
 export const VERSION = "0.3.0";
@@ -39,6 +40,9 @@ export function createServer(db: Database, cfg: StewardConfig, token: string, no
     await next();
   });
 
+  let commitCache = "";
+  currentCommit().then((c) => (commitCache = c));
+
   app.get("/api/status", (c) => {
     const counts = db
       .query(
@@ -58,6 +62,8 @@ export function createServer(db: Database, cfg: StewardConfig, token: string, no
     return c.json({
       nodeName: cfg.nodeName,
       version: VERSION,
+      commit: commitCache,
+      updating: isUpdating(),
       roots: cfg.roots,
       scanning: isScanRunning(),
       dataScanning: isDataScanRunning(),
@@ -65,6 +71,18 @@ export function createServer(db: Database, cfg: StewardConfig, token: string, no
       ...counts,
       ...data,
     });
+  });
+
+  // Self-update: ?check=1 reports drift from origin; otherwise pull, rebuild,
+  // and restart (the supervisor relaunches us on the new code). Fleet peers
+  // call this to keep each other current.
+  app.post("/api/system/update", async (c) => {
+    if (c.req.query("check")) return c.json(await checkForUpdate());
+    if (!cfg.autoUpdate) return c.json({ error: "autoUpdate is disabled on this node" }, 403);
+    const check = await checkForUpdate();
+    if (check.error) return c.json({ ok: false, detail: check.error }, 502);
+    if (check.behind === 0) return c.json({ ok: true, detail: "already up to date", commit: check.commit });
+    return c.json(await applyUpdate());
   });
 
   app.get("/api/data", (c) => {

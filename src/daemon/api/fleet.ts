@@ -9,6 +9,7 @@ import type { Database } from "bun:sqlite";
 import { networkInterfaces } from "os";
 import { randomBytes, randomInt, timingSafeEqual } from "crypto";
 import type { StewardConfig } from "../config";
+import { currentCommit, nudgePeer, maybeSelfUpdate } from "../updater";
 
 export type NodeRow = {
   id: string;
@@ -134,13 +135,20 @@ export function registerFleetRoutes(
             new Promise<never>((_, reject) => setTimeout(() => reject(new Error("probe timeout")), 3500)),
           ]);
           db.query("UPDATE nodes SET last_seen = ? WHERE id = ?").run(Date.now(), r.id);
+          // Fleet convergence: a peer on a different commit gets nudged to
+          // update (it no-ops if it is not behind origin), and we check
+          // ourselves too. Both are rate-limited.
+          if (cfg.autoUpdate && status.commit && status.commit !== (await currentCommit())) {
+            nudgePeer(getNode(r.id)!);
+            maybeSelfUpdate(`peer ${r.name} is on ${status.commit}`);
+          }
           return { ...r, online: true, status };
         } catch {
           return { ...r, online: false, status: null };
         }
       })
     );
-    return c.json({ self: { nodeId, name: cfg.nodeName, urls: lanUrls(cfg.port) }, nodes });
+    return c.json({ self: { nodeId, name: cfg.nodeName, urls: lanUrls(cfg.port), commit: await currentCommit() }, nodes });
   });
 
   app.delete("/api/fleet/nodes/:id", (c) => {

@@ -15,7 +15,7 @@ const NAV = [
   { view: "term", label: "Terminal", icon: TerminalIcon },
 ];
 
-type FleetSummary = { self: { nodeId: string; name: string }; nodes: { id: string; name: string; online: boolean }[] };
+type FleetSummary = { self: { nodeId: string; name: string; commit?: string }; nodes: { id: string; name: string; online: boolean }[] };
 
 export function App() {
   const [route, setRoute] = useState<Route>(parseHash());
@@ -130,7 +130,7 @@ export function App() {
           fleet: {onlineCount}/{fleet?.nodes.length ?? 0} peers online
         </span>
         <div className="flex-1" />
-        <span>steward 0.3</span>
+        <span>steward {fleet?.self.commit ?? ""}</span>
       </footer>
 
       {/* bottom nav (mobile) */}

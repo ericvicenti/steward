@@ -19,6 +19,7 @@ export function testConfig(overrides: Partial<StewardConfig> = {}): StewardConfi
     nodeName: "test-node",
     port: 0,
     bind: "127.0.0.1",
+    autoUpdate: false,
     roots: [],
     junkDirs: ["node_modules", "dist"],
     skipDirs: [".git"],

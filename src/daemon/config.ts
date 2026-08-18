@@ -18,6 +18,9 @@ export interface StewardConfig {
   cacheDirs: string[];
   /** Watch roots for changes and rescan automatically. */
   watch: boolean;
+  /** Keep this node's software current (pull origin + rebuild + restart),
+   *  and accept update nudges from fleet peers. */
+  autoUpdate: boolean;
   /** Directory basenames treated as derivable junk (reclaimable, never novel). */
   junkDirs: string[];
   /** Directory basenames never descended into while scanning. */
@@ -47,6 +50,7 @@ const DEFAULTS: StewardConfig = {
     "Service Worker", "blob_storage", "IndexedDB-journal",
   ],
   watch: true,
+  autoUpdate: true,
   junkDirs: [
     "node_modules", ".next", ".turbo", ".cache", "dist", "build", ".parcel-cache",
     "target", ".gradle", "Pods", "DerivedData", ".venv", "venv", "__pycache__",

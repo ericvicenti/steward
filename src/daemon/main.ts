@@ -4,6 +4,7 @@ import { createServer, VERSION } from "./server";
 import { runScan } from "./indexer/scan";
 import { runDataScan } from "./indexer/data";
 import { startWatcher } from "./indexer/watch";
+import { startAutoUpdater } from "./updater";
 
 const cfg = loadConfig();
 const token = loadToken();
@@ -33,3 +34,4 @@ setInterval(() => {
   runScan(db, cfg).catch((err) => console.error("periodic scan failed:", err));
 }, 60 * 60 * 1000);
 if (cfg.watch) startWatcher(db, cfg);
+if (cfg.autoUpdate) startAutoUpdater(db);

@@ -5,6 +5,8 @@ import { ServerIcon, FolderIcon, TerminalIcon, GitIcon } from "../lib/icons";
 type NodeStatus = {
   nodeName: string;
   version: string;
+  commit?: string;
+  updating?: boolean;
   repos: number | null;
   atRisk: number | null;
   attention: number | null;
@@ -50,7 +52,14 @@ function NodeCard(props: {
               {props.name}
               {props.isSelf && <span className="ml-2 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400">this machine</span>}
             </div>
-            <div className="truncate text-[11px] text-zinc-500">{props.subtitle}</div>
+            <div className="truncate text-[11px] text-zinc-500">
+              {s?.commit && (
+                <span className={`mr-1.5 rounded px-1 font-mono text-[10px] ${s.updating ? "bg-amber-500/15 text-amber-400" : "bg-zinc-800 text-zinc-400"}`} title="software version (git commit)">
+                  {s.updating ? "updating…" : s.commit}
+                </span>
+              )}
+              {props.subtitle}
+            </div>
           </div>
         </div>
         <span className={`mt-1 flex items-center gap-1.5 text-[11px] ${props.online ? "text-emerald-400" : "text-zinc-500"}`}>
