@@ -94,10 +94,40 @@ export function maybeSelfUpdate(reason: string): void {
     .catch((err) => console.error("auto-update check failed:", err));
 }
 
-/** Hourly origin check; peer-difference nudges happen in the fleet probe. */
+/** Hourly origin check, plus a peer sweep so fleets converge even when no
+ *  browser is open anywhere (UI fleet probes also nudge, faster). */
 export function startAutoUpdater(db: Database): () => void {
   const tick = () => maybeSelfUpdate("periodic");
+  const sweep = async () => {
+    const mine = await currentCommit();
+    const rows = db.query("SELECT id, name, url, token FROM nodes").all() as {
+      id: string; name: string; url: string; token: string;
+    }[];
+    for (const node of rows) {
+      try {
+        const res = await Promise.race([
+          fetch(`${node.url}/api/status`, {
+            headers: { authorization: `Bearer ${node.token}` },
+            signal: AbortSignal.timeout(4000),
+          }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 4500)),
+        ]);
+        if (!res.ok) continue;
+        const status = await res.json();
+        if (status.commit && status.commit !== mine) {
+          console.log(`peer ${node.name} on ${status.commit} (we are ${mine}); nudging both`);
+          nudgePeer(node);
+          maybeSelfUpdate(`peer ${node.name} differs`);
+        }
+      } catch {}
+    }
+  };
   const iv = setInterval(tick, 60 * 60 * 1000);
+  const sweepIv = setInterval(sweep, 15 * 60 * 1000);
   setTimeout(tick, 90 * 1000); // shortly after boot, off the critical path
-  return () => clearInterval(iv);
+  setTimeout(sweep, 3 * 60 * 1000);
+  return () => {
+    clearInterval(iv);
+    clearInterval(sweepIv);
+  };
 }

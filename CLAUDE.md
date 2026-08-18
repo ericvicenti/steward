@@ -17,6 +17,11 @@ Verify changes with `bun run typecheck`, `bun run build`, and `bun run test`
 real daemon and drives the built UI in headless Chromium — run `bun run build` first so
 e2e tests the current UI). `bun run test:unit` is the fast subset.
 
+Fleet nodes auto-update: each daemon checks origin hourly (and 90s after boot),
+sweeps peers every 15 min, and nudges any node on a different commit to update
+(`autoUpdate` in config; POST /api/system/update). A `git push` to main is a
+fleet-wide deploy within the hour, or within ~30s of any UI being open.
+
 Gotchas:
 - bun:sqlite named params need `$`-prefixed keys at bind time.
 - `~/Code` is itself a stray git repo; the scanner special-cases roots that contain `.git`.
