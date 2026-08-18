@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, wsUrl, fmtAgo, activeNode, activeNodeName, ApiError } from "../lib/api";
+import { api, wsUrl, fmtAgo, navigate, activeNode, activeNodeName, ApiError } from "../lib/api";
 
 type Remote = { name: string; url: string };
 type Repo = {
@@ -28,7 +28,21 @@ type Status = {
   attention: number | null;
   safe: number | null;
   junkBytes: number | null;
+  dataBytes: number | null;
+  dataCacheBytes: number | null;
+  dataScanning: boolean;
+  watching: boolean;
   lastScanAt: number | null;
+};
+type DataDir = {
+  id: number;
+  root: string;
+  path: string;
+  name: string;
+  kind: "data" | "cache";
+  size_bytes: number;
+  cache_bytes: number;
+  mtime: number | null;
 };
 
 function fmtGB(n: number): string {
@@ -53,17 +67,24 @@ function StatCard(props: { label: string; value: string; tone?: "red" | "amber" 
   );
 }
 
-export function Repos({ onLocked }: { onLocked: () => void }) {
+export function Data({ onLocked }: { onLocked: () => void }) {
   const [status, setStatus] = useState<Status | null>(null);
   const [repos, setRepos] = useState<Repo[]>([]);
+  const [dataDirs, setDataDirs] = useState<DataDir[]>([]);
+  const [dataRoot, setDataRoot] = useState<string>("");
   const [filter, setFilter] = useState("");
   const [scanProgress, setScanProgress] = useState<{ done: number; total: number } | null>(null);
 
   const refresh = async () => {
     try {
-      const [s, r] = await Promise.all([api<Status>("/api/status"), api<Repo[]>("/api/repos")]);
+      const [s, r, d] = await Promise.all([
+        api<Status>("/api/status"),
+        api<Repo[]>("/api/repos"),
+        api<{ dirs: DataDir[] }>("/api/data"),
+      ]);
       setStatus(s);
       setRepos(r);
+      setDataDirs(d.dirs);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) onLocked();
     }
@@ -79,7 +100,7 @@ export function Repos({ onLocked }: { onLocked: () => void }) {
     ws.onmessage = (msg) => {
       const ev = JSON.parse(msg.data);
       if (ev.kind === "scan:progress") setScanProgress({ done: ev.done, total: ev.total });
-      if (ev.kind === "scan:done" || ev.kind === "scan:failed") {
+      if (ev.kind === "scan:done" || ev.kind === "scan:failed" || ev.kind === "datascan:done") {
         setScanProgress(null);
         refresh();
       }
@@ -100,9 +121,9 @@ export function Repos({ onLocked }: { onLocked: () => void }) {
     <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
       <header className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-zinc-100">Repos{activeNode() ? ` on ${activeNodeName()}` : ""}</h1>
+          <h1 className="text-lg font-semibold text-zinc-100">Data{activeNode() ? ` on ${activeNodeName()}` : ""}</h1>
           <p className="text-xs text-zinc-500">
-            {status ? `${status.nodeName} · watching ${status.roots.join(", ")}` : "connecting…"}
+            {status ? `${status.nodeName}${status.watching ? " · auto-rescan on changes" : ""} · scanned ${fmtAgo(status.lastScanAt)}` : "connecting…"}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -116,17 +137,89 @@ export function Repos({ onLocked }: { onLocked: () => void }) {
             disabled={!!scanProgress || status?.scanning}
             className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
           >
-            {scanProgress || status?.scanning ? "Scanning…" : "Rescan"}
+            {scanProgress || status?.scanning || status?.dataScanning ? "Scanning…" : "Scan now"}
           </button>
         </div>
       </header>
 
-      <section className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-5 sm:gap-3">
+      <section className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6 sm:gap-3">
         <StatCard label="repos" value={String(status?.repos ?? "—")} />
         <StatCard label="at risk" value={String(status?.atRisk ?? "—")} tone={status?.atRisk ? "red" : "green"} />
         <StatCard label="attention" value={String(status?.attention ?? "—")} tone={status?.attention ? "amber" : "green"} />
-        <StatCard label="safe" value={String(status?.safe ?? "—")} tone="green" />
-        <StatCard label="reclaimable" value={status?.junkBytes ? fmtGB(status.junkBytes) : "—"} />
+        <StatCard label="user data" value={status?.dataBytes ? fmtGB(status.dataBytes) : "—"} />
+        <StatCard label="app caches" value={status?.dataCacheBytes ? fmtGB(status.dataCacheBytes) : "—"} tone="amber" />
+        <StatCard label="repo junk" value={status?.junkBytes ? fmtGB(status.junkBytes) : "—"} />
+      </section>
+
+      <section className="mt-8">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-medium uppercase tracking-wider text-zinc-500">User data</h2>
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              onClick={() => setDataRoot("")}
+              className={`rounded-full px-2.5 py-1 text-[11px] ${dataRoot === "" ? "bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30" : "text-zinc-500 hover:text-zinc-300"}`}
+            >
+              all
+            </button>
+            {[...new Set(dataDirs.map((d) => d.root))].map((r) => (
+              <button
+                key={r}
+                onClick={() => setDataRoot(r === dataRoot ? "" : r)}
+                className={`rounded-full px-2.5 py-1 text-[11px] ${dataRoot === r ? "bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30" : "text-zinc-500 hover:text-zinc-300"}`}
+              >
+                {r.split("/").pop()}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="mt-3 overflow-hidden rounded-xl border border-zinc-800" data-testid="data-table">
+          <table className="w-full text-sm">
+            <thead className="bg-zinc-900/70 text-left text-xs uppercase tracking-wider text-zinc-500">
+              <tr>
+                <th className="px-4 py-2.5 font-medium">Item</th>
+                <th className="hidden px-4 py-2.5 font-medium md:table-cell">Location</th>
+                <th className="px-4 py-2.5 font-medium text-right">Size</th>
+                <th className="hidden px-4 py-2.5 font-medium text-right sm:table-cell">Caches</th>
+                <th className="hidden px-4 py-2.5 font-medium text-right md:table-cell">Modified</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-800/70">
+              {dataDirs
+                .filter((d) => !dataRoot || d.root === dataRoot)
+                .slice(0, 100)
+                .map((d) => (
+                  <tr
+                    key={d.id}
+                    className="cursor-pointer hover:bg-zinc-900/40"
+                    onClick={() => navigate("files", { path: d.path })}
+                  >
+                    <td className="px-4 py-2">
+                      <span className={d.kind === "cache" ? "text-zinc-500" : "text-zinc-200"}>{d.name}</span>
+                      {d.kind === "cache" && (
+                        <span className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-400 ring-1 ring-amber-500/30">cache</span>
+                      )}
+                    </td>
+                    <td className="hidden px-4 py-2 text-xs text-zinc-500 md:table-cell">{d.root.split("/").slice(-2).join("/")}</td>
+                    <td className="px-4 py-2 text-right text-xs tabular-nums text-zinc-300">{fmtGB(d.size_bytes)}</td>
+                    <td className="hidden px-4 py-2 text-right text-xs tabular-nums text-amber-400/80 sm:table-cell">
+                      {d.cache_bytes ? fmtGB(d.cache_bytes) : "—"}
+                    </td>
+                    <td className="hidden px-4 py-2 text-right text-xs tabular-nums text-zinc-500 md:table-cell">{fmtAgo(d.mtime)}</td>
+                  </tr>
+                ))}
+              {dataDirs.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="px-4 py-10 text-center text-sm text-zinc-500">
+                    Data scan hasn't finished yet — sizes appear as each location is measured.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        {dataDirs.filter((d) => !dataRoot || d.root === dataRoot).length > 100 && (
+          <p className="mt-2 text-[11px] text-zinc-600">Showing the 100 largest items. Filter by location to narrow down.</p>
+        )}
       </section>
 
       <section className="mt-8">

@@ -17,17 +17,28 @@ beforeAll(() => {
   writeFileSync(join(dir, "binary.bin"), Buffer.from([0x89, 0x50, 0x00, 0x47, 0x0d, 0x00]));
 });
 
-describe("path guard", () => {
-  test("rejects paths outside home", () => {
-    expect(() => ops.resolveSafe("/etc/passwd")).toThrow("outside the home");
-    expect(() => ops.resolveSafe("/tmp")).toThrow("outside the home");
+describe("path resolution", () => {
+  test("whole filesystem is reachable", async () => {
+    expect(ops.resolveSafe("/etc/passwd")).toBe("/etc/passwd");
+    const root = await ops.listDir("/");
+    expect(root.parent).toBeNull();
+    expect(root.entries.length).toBeGreaterThan(0);
+    const etc = await ops.listDir("/etc");
+    expect(etc.entries.some((e) => e.name === "hosts")).toBe(true);
   });
-  test("rejects ../ escapes", () => {
-    expect(() => ops.resolveSafe(join(dir, "../../../../etc"))).toThrow("outside the home");
+  test("normalizes ../ traversal", () => {
+    expect(ops.resolveSafe(join(dir, "../../../../etc"))).toBe("/etc");
   });
   test("expands ~", () => {
     expect(ops.resolveSafe("~")).toBe(ops.HOME);
     expect(ops.resolveSafe("~/anything")).toBe(join(ops.HOME, "anything"));
+  });
+  test("protected paths refuse deletion", async () => {
+    for (const p of ["/", "/System", "/Users", "/etc", ops.HOME]) {
+      expect(ops.isProtectedPath(p)).toBe(true);
+      await expect(ops.remove([p], true)).rejects.toThrow("protected");
+    }
+    expect(ops.isProtectedPath(join(dir, "x"))).toBe(false);
   });
 });
 
@@ -118,7 +129,7 @@ describe("mutations", () => {
     expect(existsSync(join(dir, "doomed.txt"))).toBe(false);
   });
   test("refuses to delete home", async () => {
-    await expect(ops.remove([ops.HOME], true)).rejects.toThrow("home directory");
+    await expect(ops.remove([ops.HOME], true)).rejects.toThrow("protected");
   });
 });
 

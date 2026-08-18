@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { parseHash, navigate, api, activeNode, activeNodeName, setActiveNode, type Route } from "./lib/api";
 import { ShieldIcon, ServerIcon, FolderIcon, TerminalIcon, GitIcon } from "./lib/icons";
 import { Fleet } from "./views/Fleet";
-import { Repos } from "./views/Repos";
+import { Data } from "./views/Data";
 import { Files } from "./views/Files";
 import { Editor } from "./views/Editor";
 import { Term } from "./views/Term";
@@ -10,7 +10,7 @@ import { TokenGate } from "./views/TokenGate";
 
 const NAV = [
   { view: "fleet", label: "Fleet", icon: ServerIcon },
-  { view: "repos", label: "Repos", icon: GitIcon },
+  { view: "data", label: "Data", icon: GitIcon },
   { view: "files", label: "Files", icon: FolderIcon },
   { view: "term", label: "Terminal", icon: TerminalIcon },
 ];
@@ -67,7 +67,7 @@ export function App() {
   const view = (
     <>
       {route.view === "fleet" && <Fleet onLocked={lock} key={`fleet-${nodeGen}`} />}
-      {route.view === "repos" && <Repos onLocked={lock} key={`repos-${nodeGen}-${nodeId}`} />}
+      {route.view === "data" && <Data onLocked={lock} key={`data-${nodeGen}-${nodeId}`} />}
       {route.view === "files" && <Files params={route.params} onLocked={lock} key={`files-${nodeGen}-${nodeId}`} />}
       {route.view === "edit" && <Editor params={route.params} onLocked={lock} key={`edit-${nodeGen}-${nodeId}`} />}
       {route.view === "term" && <Term params={route.params} key={`term-${nodeGen}-${nodeId}`} />}

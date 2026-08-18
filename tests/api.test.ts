@@ -51,9 +51,12 @@ describe("fs over http", () => {
     const body = await res.json();
     expect(body.entries.map((e: any) => e.name)).toContain("readable.txt");
   });
-  test("list outside home is 403", async () => {
-    const res = await srv.api("/api/fs/list?path=/etc");
-    expect(res.status).toBe(403);
+  test("system root is browsable", async () => {
+    const res = await srv.api("/api/fs/list?path=/");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.parent).toBeNull();
+    expect(body.entries.map((e: any) => e.name)).toContain("Users");
   });
   test("read streams file with mime", async () => {
     const res = await srv.api(`/api/fs/read?path=${encodeURIComponent(join(dir, "image.png"))}`);

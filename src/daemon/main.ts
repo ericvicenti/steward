@@ -2,6 +2,8 @@ import { loadConfig, loadToken, loadNodeId, STEWARD_HOME } from "./config";
 import { openDb } from "./db";
 import { createServer, VERSION } from "./server";
 import { runScan } from "./indexer/scan";
+import { runDataScan } from "./indexer/data";
+import { startWatcher } from "./indexer/watch";
 
 const cfg = loadConfig();
 const token = loadToken();
@@ -19,8 +21,12 @@ const server = Bun.serve({
 console.log(`steward ${VERSION} — node "${cfg.nodeName}"`);
 console.log(`listening on http://127.0.0.1:${server.port} (data in ${STEWARD_HOME})`);
 
-// Initial scan on boot, then rescan every 30 minutes.
-runScan(db, cfg).catch((err) => console.error("initial scan failed:", err));
+// Initial scans on boot; the watcher handles change-driven rescans, with a
+// slow periodic fallback in case watches drop events.
+runScan(db, cfg)
+  .then(() => runDataScan(db, cfg))
+  .catch((err) => console.error("initial scan failed:", err));
 setInterval(() => {
   runScan(db, cfg).catch((err) => console.error("periodic scan failed:", err));
-}, 30 * 60 * 1000);
+}, 60 * 60 * 1000);
+if (cfg.watch) startWatcher(db, cfg);

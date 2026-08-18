@@ -1,5 +1,6 @@
-// Filesystem operations for the Files UI. All paths are confined to the
-// user's home directory (the terminal is the escape hatch, by design).
+// Filesystem operations for the Files UI. The whole filesystem is reachable
+// (like the terminal); OS permissions are the real boundary. Destructive ops
+// refuse a short list of catastrophic targets.
 import { promises as fsp } from "fs";
 import { homedir } from "os";
 import { join, resolve, sep, dirname, basename } from "path";
@@ -19,13 +20,16 @@ export function expandPath(p: string): string {
   return p;
 }
 
-/** Normalize and require the path to be inside the home directory. */
+/** Normalize to an absolute path (full filesystem access, like the shell). */
 export function resolveSafe(p: string): string {
-  const abs = resolve(expandPath(p));
-  if (abs !== HOME && !abs.startsWith(HOME + sep)) {
-    throw new FsError(403, "path is outside the home directory");
-  }
-  return abs;
+  return resolve(expandPath(p));
+}
+
+/** Paths we refuse to delete/overwrite wholesale, ever. */
+export function isProtectedPath(abs: string): boolean {
+  if (abs === "/" || abs === HOME) return true;
+  const depth = abs.split(sep).filter(Boolean).length;
+  return depth <= 1; // /System, /Users, /Library, /etc, ...
 }
 
 export type FsEntryType = "file" | "dir" | "symlink";
@@ -125,7 +129,7 @@ export async function listDir(path: string) {
   for (const gid of new Set(entries.map((e) => e.gid))) groups[gid] = await groupname(gid);
   return {
     path: dir,
-    parent: dir === HOME ? null : dirname(dir),
+    parent: dir === "/" ? null : dirname(dir),
     home: HOME,
     entries,
     users,
@@ -209,7 +213,8 @@ export async function copy(from: string, to: string) {
 
 export async function remove(paths: string[], permanent: boolean) {
   const resolved = paths.map(resolveSafe);
-  if (resolved.some((p) => p === HOME)) throw new FsError(400, "refusing to delete home directory");
+  const guarded = resolved.find(isProtectedPath);
+  if (guarded) throw new FsError(400, `refusing to delete protected path ${guarded}`);
   const trashDir = join(HOME, ".Trash");
   const useTrash = !permanent && (await fsp.stat(trashDir).catch(() => null));
   for (const p of resolved) {

@@ -59,6 +59,18 @@ export function initSchema(db: Database): void {
       status TEXT NOT NULL DEFAULT 'running'
     );
 
+    CREATE TABLE IF NOT EXISTS data_dirs (
+      id INTEGER PRIMARY KEY,
+      root TEXT NOT NULL,
+      path TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'data',   -- data | cache
+      size_bytes INTEGER NOT NULL DEFAULT 0,
+      cache_bytes INTEGER NOT NULL DEFAULT 0,
+      mtime INTEGER,
+      scanned_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS nodes (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,

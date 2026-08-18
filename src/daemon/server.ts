@@ -6,6 +6,7 @@ import type { Database } from "bun:sqlite";
 import type { StewardConfig } from "./config";
 import { bus } from "./events";
 import { runScan, isScanRunning } from "./indexer/scan";
+import { runDataScan, isDataScanRunning } from "./indexer/data";
 import type { RepoRow } from "./db";
 import { registerFsRoutes } from "./api/fs";
 import { createTermHandlers } from "./api/term";
@@ -45,13 +46,26 @@ export function createServer(db: Database, cfg: StewardConfig, token: string, no
          FROM repos`
       )
       .get() as Record<string, number | null>;
+    const data = db
+      .query(`SELECT SUM(size_bytes) AS dataBytes, SUM(cache_bytes) AS dataCacheBytes FROM data_dirs`)
+      .get() as Record<string, number | null>;
     return c.json({
       nodeName: cfg.nodeName,
       version: VERSION,
       roots: cfg.roots,
       scanning: isScanRunning(),
+      dataScanning: isDataScanRunning(),
+      watching: cfg.watch,
       ...counts,
+      ...data,
     });
+  });
+
+  app.get("/api/data", (c) => {
+    const rows = db
+      .query("SELECT * FROM data_dirs ORDER BY size_bytes DESC")
+      .all() as Record<string, unknown>[];
+    return c.json({ roots: cfg.dataRoots, dirs: rows });
   });
 
   app.get("/api/repos", (c) => {
@@ -68,6 +82,9 @@ export function createServer(db: Database, cfg: StewardConfig, token: string, no
   app.post("/api/scan", (c) => {
     if (!isScanRunning()) {
       runScan(db, cfg).catch((err) => console.error("scan error:", err));
+    }
+    if (!isDataScanRunning()) {
+      runDataScan(db, cfg).catch((err) => console.error("data scan error:", err));
     }
     return c.json({ started: true });
   });

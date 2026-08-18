@@ -30,8 +30,13 @@ async function waitFor(fn: () => Promise<boolean> | boolean, ms = 15000, step = 
 const gotoFiles = async (path: string) => {
   await page.goto(`${BASE}/#/files?path=${encodeURIComponent(path)}`);
   await page.waitForSelector('[data-testid="files-table"]');
-  // wait for the async listing (not just the table shell) to render
-  await page.waitForSelector('[data-testid^="row-"]');
+  // wait until the breadcrumbs reflect THIS directory (hash navigation keeps
+  // the previous listing rendered while the new one loads)
+  const base = path.split("/").pop()!;
+  await waitFor(async () => {
+    const crumbs = await page.textContent('[data-testid="breadcrumbs"]').catch(() => "");
+    return (crumbs ?? "").includes(base);
+  });
 };
 
 const rowMenu = async (name: string, itemLabel: string) => {
@@ -47,13 +52,17 @@ beforeAll(async () => {
   play = mkdtempSync(join(homedir(), ".steward-e2e-play-"));
   writeFileSync(
     join(stewardHome, "config.json"),
-    JSON.stringify({ nodeName: "e2e-node", port: PORT, bind: "127.0.0.1", roots: [play], junkDirs: ["node_modules"], skipDirs: [".git"], scanDepth: 2 })
+    JSON.stringify({ nodeName: "e2e-node", port: PORT, bind: "127.0.0.1", roots: [play], dataRoots: [join(play, "userdata")], cacheDirs: ["Caches"], watch: false, junkDirs: ["node_modules"], skipDirs: [".git"], scanDepth: 2 })
   );
   writeFileSync(join(play, "readme.md"), "# playground\n");
   writeFileSync(join(play, "script.ts"), "export const x = 1\n");
   writeFileSync(join(play, ".secret"), "hidden!\n");
   mkdirSync(join(play, "folder"));
   writeFileSync(join(play, "folder", "inside.txt"), "inner content\n");
+  mkdirSync(join(play, "userdata", "My Novel"), { recursive: true });
+  writeFileSync(join(play, "userdata", "My Novel", "draft.txt"), "important words");
+  mkdirSync(join(play, "userdata", "Caches"));
+  writeFileSync(join(play, "userdata", "Caches", "junk"), "cache bytes");
 
   daemon = Bun.spawn(["bun", "run", join(ROOT, "src/daemon/main.ts")], {
     env: { ...process.env, STEWARD_HOME: stewardHome },
@@ -91,13 +100,28 @@ test("shell renders: title bar, activity bar, fleet home", async () => {
   expect(await page.textContent("main")).toContain("this machine");
 });
 
-test("repos view renders the risk table", async () => {
-  await page.click('[data-testid="nav-repos"]');
+test("data view: user data inventory + repos table", async () => {
+  await page.click('[data-testid="nav-data"]');
   await page.waitForSelector("text=Repositories");
+  await page.waitForSelector('[data-testid="data-table"]');
+  await waitFor(async () => (await page.textContent('[data-testid="data-table"]'))?.includes("My Novel") ?? false);
+  const table = await page.textContent('[data-testid="data-table"]');
+  expect(table).toContain("Caches");
+  expect(await page.textContent("main")).toContain("User data");
+});
+
+test("files: can browse the system root", async () => {
+  await page.goto(`${BASE}/#/files?path=/`);
+  await page.waitForSelector('[data-testid="row-Users"]');
+  expect(await page.isVisible('[data-testid="row-Users"]')).toBe(true);
+  // breadcrumb shows / and navigating into /Users works
+  await page.dblclick('[data-testid="row-Users"]');
+  await page.waitForSelector('[data-testid^="row-"]');
 });
 
 test("files: lists playground entries with metadata", async () => {
   await gotoFiles(play);
+  await page.waitForSelector('[data-testid="row-readme.md"]');
   expect(await page.isVisible(`[data-testid="row-readme.md"]`)).toBe(true);
   expect(await page.isVisible(`[data-testid="row-folder"]`)).toBe(true);
   // permissions column shows rwx string
@@ -281,7 +305,7 @@ test("fleet: pair a second node via the UI and browse it", async () => {
   writeFileSync(join(home2, "node-id"), "stw-e2e-two");
   writeFileSync(
     join(home2, "config.json"),
-    JSON.stringify({ nodeName: "second-box", port: 4796, bind: "127.0.0.1", roots: [], junkDirs: [], skipDirs: [], scanDepth: 1 })
+    JSON.stringify({ nodeName: "second-box", port: 4796, bind: "127.0.0.1", roots: [], dataRoots: [], watch: false, junkDirs: [], skipDirs: [], scanDepth: 1 })
   );
   daemon2 = Bun.spawn(["bun", "run", join(ROOT, "src/daemon/main.ts")], {
     env: { ...process.env, STEWARD_HOME: home2 },

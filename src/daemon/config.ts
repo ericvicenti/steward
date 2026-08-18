@@ -12,6 +12,12 @@ export interface StewardConfig {
   bind: string;
   /** Directories scanned for repos and novel data. */
   roots: string[];
+  /** User-data locations inventoried by the data scan (sizes, cache split). */
+  dataRoots: string[];
+  /** Directory basenames inside data roots that are app caches (reclaimable). */
+  cacheDirs: string[];
+  /** Watch roots for changes and rescan automatically. */
+  watch: boolean;
   /** Directory basenames treated as derivable junk (reclaimable, never novel). */
   junkDirs: string[];
   /** Directory basenames never descended into while scanning. */
@@ -25,6 +31,22 @@ const DEFAULTS: StewardConfig = {
   port: 4777,
   bind: "0.0.0.0",
   roots: [join(homedir(), "Code")],
+  dataRoots: [
+    join(homedir(), "Desktop"),
+    join(homedir(), "Documents"),
+    join(homedir(), "Downloads"),
+    join(homedir(), "Pictures"),
+    join(homedir(), "Movies"),
+    join(homedir(), "Music"),
+    join(homedir(), "Library", "Application Support"),
+  ],
+  cacheDirs: [
+    "Cache", "Caches", "cache", "GPUCache", "Code Cache", "DawnCache", "DawnGraphiteCache",
+    "DawnWebGPUCache", "CachedData", "CachedProfilesData", "CachedExtensions",
+    "ShaderCache", "GrShaderCache", "logs", "Logs", "tmp", "Temp", "Crashpad",
+    "Service Worker", "blob_storage", "IndexedDB-journal",
+  ],
+  watch: true,
   junkDirs: [
     "node_modules", ".next", ".turbo", ".cache", "dist", "build", ".parcel-cache",
     "target", ".gradle", "Pods", "DerivedData", ".venv", "venv", "__pycache__",

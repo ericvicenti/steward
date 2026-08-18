@@ -7,13 +7,17 @@ set -euo pipefail
 
 STEWARD_HOME="${STEWARD_HOME:-$HOME/.steward}"
 STEWARD_REPO="${STEWARD_REPO:-}"
+DEFAULT_REPO="https://github.com/ericvicenti/steward.git"
 SRC="$STEWARD_HOME/src"
 OS="$(uname -s)"
 
 log() { printf '\033[1;36msteward\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31msteward\033[0m %s\n' "$*" >&2; exit 1; }
 
-command -v git >/dev/null || fail "git is required. On macOS: xcode-select --install"
+command -v git >/dev/null || fail "git is required. On macOS: xcode-select --install; on Debian/Ubuntu: apt install git"
+if [ "$OS" = "Linux" ] && ! command -v unzip >/dev/null && ! command -v bun >/dev/null; then
+  fail "unzip is required to install bun. On Debian/Ubuntu: apt install unzip"
+fi
 
 # --- bun ---------------------------------------------------------------------
 if ! command -v bun >/dev/null && [ ! -x "$HOME/.bun/bin/bun" ]; then
@@ -38,7 +42,9 @@ elif [ -f "$(dirname "$0")/package.json" ] && grep -q '"name": "steward"' "$(dir
   git clone "$local_src" "$SRC"
   git -C "$SRC" remote set-url origin "$local_src"
 else
-  fail "no source found. Set STEWARD_REPO=<git url> or run from a steward checkout."
+  # curl-piped install: pull from the public repo.
+  log "cloning ${DEFAULT_REPO}"
+  git clone "$DEFAULT_REPO" "$SRC"
 fi
 
 # --- build -------------------------------------------------------------------

@@ -211,9 +211,10 @@ function TreeNode(props: {
   name: string;
   depth: number;
   current: string;
+  defaultOpen?: boolean;
   onNavigate: (p: string) => void;
 }) {
-  const [open, setOpen] = useState(props.depth === 0);
+  const [open, setOpen] = useState(!!props.defaultOpen);
   const [children, setChildren] = useState<{ name: string; path: string }[] | null>(null);
   const isCurrent = props.current === props.path;
 
@@ -292,15 +293,19 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
     toastTimer.current = setTimeout(() => setToastMsg(null), 4000);
   }, []);
 
+  const loadSeq = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     try {
       setError(null);
       const res = await api<Listing>(`/api/fs/list?path=${encodeURIComponent(path)}`);
+      if (seq !== loadSeq.current) return; // a newer navigation superseded this fetch
       setListing(res);
       setSel(new Set());
       setDeepResults(null);
       setFilter("");
     } catch (err) {
+      if (seq !== loadSeq.current) return;
       if (err instanceof ApiError && err.status === 401) return onLocked();
       setError(String(err instanceof Error ? err.message : err));
     }
@@ -477,12 +482,14 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
   const crumbs = useMemo(() => {
     if (!listing) return [];
     const home = listing.home;
-    const rel = listing.path === home ? "" : listing.path.slice(home.length + 1);
+    const underHome = listing.path === home || listing.path.startsWith(home + "/");
+    const base = underHome ? home : "";
+    const rel = listing.path === base ? "" : listing.path.slice(base.length + 1);
     const parts = rel ? rel.split("/") : [];
-    const acc: { label: string; path: string }[] = [{ label: "~", path: home }];
-    let cur = home;
+    const acc: { label: string; path: string }[] = [{ label: underHome ? "~" : "/", path: underHome ? home : "/" }];
+    let cur = base;
     for (const p of parts) {
-      cur = joinPath(cur, p);
+      cur = joinPath(cur || "/", p);
       acc.push({ label: p, path: cur });
     }
     return acc;
@@ -676,7 +683,8 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
         {/* directory tree (desktop) */}
         {listing && (
           <aside className="hidden w-52 shrink-0 overflow-auto border-r border-zinc-800/70 p-1.5 md:block" data-testid="file-tree">
-            <TreeNode path={listing.home} name="~" depth={0} current={listing.path} onNavigate={go} />
+            <TreeNode path={listing.home} name="~" depth={0} defaultOpen current={listing.path} onNavigate={go} />
+            <TreeNode path="/" name="/" depth={0} current={listing.path} onNavigate={go} />
           </aside>
         )}
 

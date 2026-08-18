@@ -160,7 +160,7 @@ export function Fleet({ onLocked }: { onLocked: () => void }) {
             online
             isSelf
             status={selfStatus}
-            onRepos={() => goto("", "", "repos")}
+            onRepos={() => goto("", "", "data")}
             onBrowse={() => goto("", "", "files")}
             onTerminal={() => goto("", "", "term")}
           />
@@ -171,7 +171,7 @@ export function Fleet({ onLocked }: { onLocked: () => void }) {
               subtitle={`${n.url} · paired ${fmtAgo(n.added_at)}${n.last_seen ? ` · seen ${fmtAgo(n.last_seen)}` : ""}`}
               online={n.online}
               status={n.status}
-              onRepos={() => goto(n.id, n.name, "repos")}
+              onRepos={() => goto(n.id, n.name, "data")}
               onBrowse={() => goto(n.id, n.name, "files")}
               onTerminal={() => goto(n.id, n.name, "term")}
               onUnpair={async () => {

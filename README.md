@@ -6,10 +6,13 @@ every machine converges to your desired setup.
 
 ## Install (one line)
 
+On any Mac or Linux box (needs git; Linux also needs unzip and curl):
+
 ```sh
-curl -fsSL https://steward.sh/install | bash   # once hosted
-./install.sh                                   # from this checkout
+curl -fsSL https://raw.githubusercontent.com/ericvicenti/steward/main/install.sh | bash
 ```
+
+From a source checkout: `./install.sh`. Re-running either form updates and restarts.
 
 This installs bun if needed, clones the source to `~/.steward/src`, builds the UI, registers
 a launchd (macOS) or systemd (Linux) service, and opens the web UI at
