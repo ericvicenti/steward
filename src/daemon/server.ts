@@ -123,6 +123,16 @@ export function createServer(db: Database, cfg: StewardConfig, token: string, no
     })
   );
 
+  // Hashed assets are immutable; HTML must revalidate so deploys (which
+  // replace the asset hashes) never strand a stale index.html in a browser.
+  app.use("/*", async (c, next) => {
+    await next();
+    if (c.req.path.startsWith("/assets/")) {
+      c.header("cache-control", "public, max-age=31536000, immutable");
+    } else if ((c.res.headers.get("content-type") ?? "").includes("text/html")) {
+      c.header("cache-control", "no-cache");
+    }
+  });
   app.use("/*", serveStatic({ root: UI_DIST }));
   app.get("*", serveStatic({ path: join(UI_DIST, "index.html") }));
 

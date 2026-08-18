@@ -14,6 +14,9 @@ const { fetch, websocket } = createServer(db, cfg, token, nodeId);
 const server = Bun.serve({
   port: cfg.port,
   hostname: cfg.bind,
+  // Default is 10s, which kills slow-but-legitimate requests (large uploads,
+  // fleet proxying, HLS transcode start). 0 disables the idle timeout.
+  idleTimeout: 0,
   fetch,
   websocket,
 });

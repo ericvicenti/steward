@@ -118,14 +118,21 @@ export function registerFleetRoutes(
 
   app.get("/api/fleet/nodes", async (c) => {
     const rows = db.query("SELECT id, name, url, added_at, last_seen FROM nodes ORDER BY name").all() as Omit<NodeRow, "token">[];
-    // Probe reachability + pull summary stats concurrently (short timeout).
+    // Probe reachability + pull summary stats concurrently. The race timer is
+    // a HARD bound: AbortSignal cannot cancel a stuck DNS/mDNS lookup (e.g. an
+    // offline peer.local hostname), which would otherwise hang this request.
     const nodes = await Promise.all(
       rows.map(async (r) => {
         try {
           const node = getNode(r.id)!;
-          const res = await peerFetch(node, "/api/status", { signal: AbortSignal.timeout(3000) });
-          if (!res.ok) throw new Error(String(res.status));
-          const status = await res.json();
+          const status = await Promise.race([
+            (async () => {
+              const res = await peerFetch(node, "/api/status", { signal: AbortSignal.timeout(3000) });
+              if (!res.ok) throw new Error(String(res.status));
+              return res.json();
+            })(),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("probe timeout")), 3500)),
+          ]);
           db.query("UPDATE nodes SET last_seen = ? WHERE id = ?").run(Date.now(), r.id);
           return { ...r, online: true, status };
         } catch {

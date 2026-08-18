@@ -133,6 +133,23 @@ test("remote terminal through the websocket proxy", async () => {
   ws.close();
 }, 15000);
 
+test("fleet listing stays fast when a peer is unreachable", async () => {
+  // Simulate a paired-but-offline machine (unresolvable mDNS-style hostname —
+  // the case that used to hang the endpoint past the server timeout).
+  nodeA.db
+    .query("INSERT OR REPLACE INTO nodes (id, name, url, token, added_at) VALUES (?, ?, ?, ?, ?)")
+    .run("stw-ghost", "ghost", "http://definitely-not-a-real-host-xyz.local:4777", "x", Date.now());
+  const start = Date.now();
+  const res = await nodeA.api("/api/fleet/nodes");
+  const elapsed = Date.now() - start;
+  expect(res.status).toBe(200);
+  expect(elapsed).toBeLessThan(6000);
+  const body = await res.json();
+  const ghost = body.nodes.find((n: any) => n.id === "stw-ghost");
+  expect(ghost.online).toBe(false);
+  nodeA.db.query("DELETE FROM nodes WHERE id = 'stw-ghost'").run();
+}, 15000);
+
 test("unpair removes the node", async () => {
   await nodeA.api(`/api/fleet/nodes/${bId}`, { method: "DELETE" });
   const nodes = await (await nodeA.api("/api/fleet/nodes")).json();
