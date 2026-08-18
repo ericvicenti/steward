@@ -21,8 +21,10 @@ Gotchas:
 - bun:sqlite named params need `$`-prefixed keys at bind time.
 - `~/Code` is itself a stray git repo; the scanner special-cases roots that contain `.git`.
 - The installed service runs from `~/.steward/src` (a clone), not this checkout.
-  Deploy = commit here, then `git -C ~/.steward/src pull && (cd ~/.steward/src && bun
-  install && bun run build) && steward restart`.
+  Public repo: https://github.com/ericvicenti/steward — both this checkout and
+  `~/.steward/src` track it as origin. Deploy = commit + `git push`, then
+  `git -C ~/.steward/src pull && (cd ~/.steward/src && bun install && bun run build)
+  && steward restart`. Servers install via the curl one-liner in README.md.
 - Shell scripts must be pure ASCII (bash parses multibyte chars into variable names under
   `set -u`); tests/install.test.ts enforces this.
 - node-pty does not work under Bun; the web terminal uses `bun-pty`.
