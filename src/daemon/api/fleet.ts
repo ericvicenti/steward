@@ -150,21 +150,25 @@ export function registerFleetRoutes(
     // Strip our token from forwarded query strings; peer auth is via header.
     const cleanQs = qs ? "?" + new URLSearchParams([...new URLSearchParams(qs.slice(1))].filter(([k]) => k !== "token")).toString() : "";
     try {
+      const fwdHeaders: Record<string, string> = {
+        "content-type": c.req.header("content-type") ?? "application/json",
+      };
+      const range = c.req.header("range");
+      if (range) fwdHeaders["range"] = range;
       const res = await peerFetch(node, `/api/${rest}${cleanQs}`, {
         method: c.req.method,
-        headers: { "content-type": c.req.header("content-type") ?? "application/json" },
+        headers: fwdHeaders,
         body: ["GET", "HEAD"].includes(c.req.method) ? undefined : await c.req.arrayBuffer(),
         signal: AbortSignal.timeout(60_000),
       });
-      return new Response(res.body, {
-        status: res.status,
-        headers: {
-          "content-type": res.headers.get("content-type") ?? "application/octet-stream",
-          ...(res.headers.get("content-disposition")
-            ? { "content-disposition": res.headers.get("content-disposition")! }
-            : {}),
-        },
-      });
+      const outHeaders: Record<string, string> = {
+        "content-type": res.headers.get("content-type") ?? "application/octet-stream",
+      };
+      for (const h of ["content-disposition", "content-range", "accept-ranges", "content-length"]) {
+        const v = res.headers.get(h);
+        if (v) outHeaders[h] = v;
+      }
+      return new Response(res.body, { status: res.status, headers: outHeaders });
     } catch (err) {
       return c.json({ error: `proxy to ${node.name} failed: ${err instanceof Error ? err.message : err}` }, 502);
     }

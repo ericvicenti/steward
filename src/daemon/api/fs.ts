@@ -31,13 +31,34 @@ export function registerFsRoutes(app: Hono) {
       const name = basename(full);
       const headers: Record<string, string> = {
         "content-type": ops.guessMime(name),
-        "content-length": String(st.size),
+        "accept-ranges": "bytes",
       };
       if (c.req.query("download")) {
         headers["content-disposition"] = `attachment; filename="${name.replace(/"/g, "")}"`;
       }
-      const stream = createReadStream(full);
-      return new Response(stream as any, { headers });
+      // Range support so media can seek (and downloads can resume).
+      const range = c.req.header("range");
+      const m = range?.match(/^bytes=(\d*)-(\d*)$/);
+      if (m && st.size > 0 && (m[1] || m[2])) {
+        let start: number;
+        let end: number;
+        if (m[1] === "") {
+          // suffix range: last N bytes
+          start = Math.max(0, st.size - parseInt(m[2], 10));
+          end = st.size - 1;
+        } else {
+          start = parseInt(m[1], 10);
+          end = m[2] ? Math.min(parseInt(m[2], 10), st.size - 1) : st.size - 1;
+        }
+        if (start >= st.size || start > end) {
+          return new Response(null, { status: 416, headers: { "content-range": `bytes */${st.size}` } });
+        }
+        headers["content-range"] = `bytes ${start}-${end}/${st.size}`;
+        headers["content-length"] = String(end - start + 1);
+        return new Response(createReadStream(full, { start, end }) as any, { status: 206, headers });
+      }
+      headers["content-length"] = String(st.size);
+      return new Response(createReadStream(full) as any, { headers });
     } catch (err) {
       const { status, message } = errStatus(err);
       return c.json({ error: message }, status as any);

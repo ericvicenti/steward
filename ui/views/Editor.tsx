@@ -6,15 +6,105 @@ import { bracketMatching, indentOnInput, syntaxHighlighting, defaultHighlightSty
 import { search, searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { languages } from "@codemirror/language-data";
-import { api, post, rawUrl, navigate, fmtBytes, ApiError } from "../lib/api";
+import { api, post, rawUrl, scoped, activeNode, navigate, fmtBytes, ApiError } from "../lib/api";
 import { SkipBackIcon, SkipFwdIcon, RepeatIcon, ShuffleIcon } from "../lib/icons";
+import videojs from "video.js";
+import "video.js/dist/video-js.css";
 
 const MEDIA_EXT: Record<string, "image" | "video" | "audio" | "pdf"> = {
   png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", svg: "image", ico: "image", avif: "image",
-  mp4: "video", webm: "video", mov: "video",
-  mp3: "audio", wav: "audio", m4a: "audio", flac: "audio", ogg: "audio", aiff: "audio",
+  // non-native containers (mkv, avi, ...) play via the HLS transcoder
+  mp4: "video", webm: "video", mov: "video", m4v: "video", mkv: "video", avi: "video",
+  flv: "video", wmv: "video", mpg: "video", mpeg: "video", mts: "video", m2ts: "video",
+  mp3: "audio", wav: "audio", m4a: "audio", flac: "audio", ogg: "audio", aiff: "audio", opus: "audio",
   pdf: "pdf",
 };
+
+// ---------- video.js player (direct or HLS-transcoded) ----------
+
+// mov is usually h264+aac, playable in real Chrome/Safari; the error handler
+// falls back to HLS transcode when the codec turns out to be unsupported.
+const NATIVE_VIDEO = new Set(["mp4", "webm", "m4v", "mov"]);
+const VIDEO_MIME: Record<string, string> = { mp4: "video/mp4", m4v: "video/mp4", webm: "video/webm", mov: "video/quicktime" };
+
+function VideoJsPlayer(props: { path: string; loop: boolean; onEnded: () => void }) {
+  const host = useRef<HTMLDivElement>(null);
+  const playerRef = useRef<ReturnType<typeof videojs> | null>(null);
+  const ext = props.path.toLowerCase().split(".").pop() ?? "";
+  const [mode, setMode] = useState<"direct" | "hls">(NATIVE_VIDEO.has(ext) ? "direct" : "hls");
+  const [status, setStatus] = useState<string | null>(null);
+  const [ffmpegAvailable, setFfmpegAvailable] = useState(true);
+
+  useEffect(() => {
+    api<{ ffmpeg: boolean }>(`/api/media/info?path=${encodeURIComponent(props.path)}`)
+      .then((i) => setFfmpegAvailable(i.ffmpeg))
+      .catch(() => {});
+  }, [props.path]);
+
+  useEffect(() => {
+    if (!host.current) return;
+    let disposed = false;
+    // video.js manages its own DOM; give it an element React doesn't own.
+    const el = document.createElement("video-js");
+    el.classList.add("vjs-big-play-centered");
+    el.setAttribute("playsinline", "");
+    host.current.appendChild(el);
+    const player = videojs(el, {
+      controls: true,
+      autoplay: true,
+      fluid: true,
+      loop: props.loop,
+      playbackRates: [0.75, 1, 1.25, 1.5, 2],
+    });
+    playerRef.current = player;
+    player.on("ended", () => props.onEnded());
+
+    (async () => {
+      try {
+        if (mode === "hls") {
+          setStatus("preparing stream…");
+          const res = await post<{ url: string; transcoding: boolean }>("/api/media/hls/start", { path: props.path });
+          if (disposed) return;
+          setStatus(res.transcoding ? "transcoding in the background — seek range grows as it runs" : null);
+          player.src({ src: scoped(res.url), type: "application/x-mpegURL" });
+        } else {
+          setStatus(null);
+          player.src({ src: rawUrl("/api/fs/read", { path: props.path }), type: VIDEO_MIME[ext] ?? "video/mp4" });
+          // If the browser can't decode this file, fall back to transcoding.
+          player.one("error", () => {
+            if (!disposed && ffmpegAvailable) setMode("hls");
+          });
+        }
+      } catch (err) {
+        if (!disposed) setStatus(`playback failed: ${err instanceof Error ? err.message : err}`);
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      playerRef.current = null;
+      player.dispose();
+    };
+  }, [props.path, mode]);
+
+  useEffect(() => {
+    playerRef.current?.loop(props.loop);
+  }, [props.loop]);
+
+  return (
+    <div className="w-full max-w-4xl">
+      <div ref={host} data-testid="videojs-host" data-vjs-player className="overflow-hidden rounded-xl shadow-2xl" />
+      <div className="mt-1.5 flex items-center justify-between text-[11px] text-zinc-500">
+        <span data-testid="video-status">{status ?? (mode === "hls" ? "HLS stream" : "direct playback")}</span>
+        {ffmpegAvailable && mode === "direct" && (
+          <button className="text-zinc-500 hover:text-emerald-400" onClick={() => setMode("hls")} data-testid="transcode-btn">
+            Transcode (HLS)
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // ---------- media player with folder playlist ----------
 
@@ -57,15 +147,7 @@ function MediaPlayer({ path, kind }: { path: string; kind: "audio" | "video" }) 
     <div className="flex min-h-0 flex-1 flex-col lg:flex-row" data-testid="media-player">
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 p-4 sm:p-8">
         {kind === "video" ? (
-          <video
-            key={path}
-            src={rawUrl("/api/fs/read", { path })}
-            controls
-            autoPlay
-            loop={loop}
-            onEnded={() => !loop && step(1)}
-            className="max-h-full w-full max-w-4xl rounded-xl shadow-2xl"
-          />
+          <VideoJsPlayer key={path} path={path} loop={loop} onEnded={() => !loop && step(1)} />
         ) : (
           <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6 text-center shadow-2xl">
             <div className="mx-auto flex h-28 w-28 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500/25 to-sky-500/20 text-5xl">
@@ -225,7 +307,7 @@ export function Editor({ params, onLocked }: { params: URLSearchParams; onLocked
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-3 border-b border-zinc-800 px-4 py-2.5">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-zinc-800 px-3 py-2 sm:px-4">
         <button onClick={() => navigate("files", { path: dir })} className="rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800">
           ← {dir.split("/").pop() || "~"}
         </button>

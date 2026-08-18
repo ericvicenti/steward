@@ -27,6 +27,42 @@ fi
 export PATH="$HOME/.bun/bin:$PATH"
 BUN="$(command -v bun)"
 
+# --- ffmpeg (media transcoding; non-fatal if it cannot be installed) --------
+if [ -z "${STEWARD_TEST:-}" ] && ! command -v ffmpeg >/dev/null; then
+  if [ "$OS" = "Darwin" ]; then
+    if ! command -v brew >/dev/null; then
+      for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        [ -x "$b" ] && eval "$("$b" shellenv)" && break
+      done
+    fi
+    if ! command -v brew >/dev/null; then
+      log "installing Homebrew (needed for ffmpeg)..."
+      NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+        || log "warning: Homebrew install failed; media transcoding will be disabled"
+      for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        [ -x "$b" ] && eval "$("$b" shellenv)" && break
+      done
+    fi
+    if command -v brew >/dev/null; then
+      log "installing ffmpeg via Homebrew..."
+      brew install -q ffmpeg || log "warning: ffmpeg install failed; media transcoding will be disabled"
+    fi
+  elif [ "$OS" = "Linux" ]; then
+    log "installing ffmpeg..."
+    if command -v apt-get >/dev/null; then
+      { sudo -n apt-get update -qq && sudo -n apt-get install -y -qq ffmpeg; } 2>/dev/null \
+        || { [ "$(id -u)" = "0" ] && apt-get update -qq && apt-get install -y -qq ffmpeg; } \
+        || log "warning: could not install ffmpeg (needs sudo); run: sudo apt install ffmpeg"
+    elif command -v dnf >/dev/null; then
+      sudo -n dnf install -y -q ffmpeg 2>/dev/null || log "warning: could not install ffmpeg; run: sudo dnf install ffmpeg"
+    elif command -v apk >/dev/null; then
+      apk add --no-progress ffmpeg 2>/dev/null || log "warning: could not install ffmpeg; run: apk add ffmpeg"
+    else
+      log "warning: unknown package manager; install ffmpeg manually for media transcoding"
+    fi
+  fi
+fi
+
 # --- source ------------------------------------------------------------------
 mkdir -p "$STEWARD_HOME/bin"
 if [ -d "$SRC/.git" ]; then

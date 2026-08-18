@@ -11,11 +11,13 @@ import type { RepoRow } from "./db";
 import { registerFsRoutes } from "./api/fs";
 import { createTermHandlers } from "./api/term";
 import { registerFleetRoutes } from "./api/fleet";
+import { registerMediaRoutes, cleanupHlsCache } from "./api/media";
 
 const UI_DIST = join(import.meta.dir, "../../dist/ui");
 export const VERSION = "0.3.0";
 
 export function createServer(db: Database, cfg: StewardConfig, token: string, nodeId = "stw-dev") {
+  cleanupHlsCache();
   const { upgradeWebSocket, websocket } = createBunWebSocket();
   const app = new Hono();
 
@@ -29,6 +31,10 @@ export function createServer(db: Database, cfg: StewardConfig, token: string, no
     // Pairing completion is called by a not-yet-trusted peer; the one-time
     // code is its gate.
     if (c.req.path === "/api/fleet/pairing/complete") return next();
+    // HLS segment requests come from <video> without headers; their ids are
+    // unguessable (derived from the serving daemon's token). Also allow them
+    // through the fleet proxy for remote playback.
+    if (c.req.method === "GET" && /^\/api\/(nodes\/[^/]+\/proxy\/)?media\/hls\//.test(c.req.path)) return next();
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     await next();
   });
@@ -90,6 +96,7 @@ export function createServer(db: Database, cfg: StewardConfig, token: string, no
   });
 
   registerFsRoutes(app);
+  registerMediaRoutes(app, token);
   registerFleetRoutes(app, db, cfg, nodeId, token, upgradeWebSocket);
 
   app.get(

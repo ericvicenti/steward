@@ -52,9 +52,9 @@ function icon(e: Entry): string {
 
 function Modal(props: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60" onMouseDown={props.onClose}>
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4" onMouseDown={props.onClose}>
       <div
-        className={`${props.wide ? "w-[540px]" : "w-[420px]"} rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl`}
+        className={`w-full ${props.wide ? "max-w-[540px]" : "max-w-[420px]"} rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl`}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <h3 className="mb-4 text-sm font-semibold text-zinc-100">{props.title}</h3>
@@ -572,7 +572,7 @@ export function Files({ params, onLocked }: { params: URLSearchParams; onLocked:
       <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-3 py-2" onClick={(e) => e.stopPropagation()}>
         <div className="flex min-w-0 flex-1 items-center gap-1 text-sm">
           {pathEdit === null ? (
-            <div className="flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap" data-testid="breadcrumbs">
+            <div className="flex min-w-0 items-center gap-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none]" data-testid="breadcrumbs">
               {crumbs.map((c, i) => (
                 <span key={c.path} className="flex items-center gap-1">
                   {i > 0 && <span className="text-zinc-600">/</span>}

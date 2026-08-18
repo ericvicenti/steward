@@ -89,6 +89,17 @@ test("proxy: write a file on the remote node", async () => {
   expect((await read.json()).content).toBe("hello beta");
 });
 
+test("proxy forwards range requests (remote media seeking)", async () => {
+  writeFileSync(join(dir, "range-remote.bin"), "abcdefghij");
+  const res = await nodeA.api(
+    `/api/nodes/${bId}/proxy/fs/read?path=${encodeURIComponent(join(dir, "range-remote.bin"))}`,
+    { headers: { range: "bytes=2-5" } }
+  );
+  expect(res.status).toBe(206);
+  expect(res.headers.get("content-range")).toBe("bytes 2-5/10");
+  expect(await res.text()).toBe("cdef");
+});
+
 test("proxy: unauthorized callers cannot use the proxy", async () => {
   const res = await fetch(`${nodeA.base}/api/nodes/${bId}/proxy/fs/list?path=${encodeURIComponent(dir)}`);
   expect(res.status).toBe(401);

@@ -362,6 +362,64 @@ test("media player: playlist, transport, track switching", async () => {
   await waitFor(async () => (await page.textContent("main"))?.includes("2 of 2") ?? false);
 });
 
+test("video: direct playback with working seek (webm)", async () => {
+  const ffmpeg = Bun.which("ffmpeg") ?? "/opt/homebrew/bin/ffmpeg";
+  const src = join(play, "clip.webm");
+  const gen = Bun.spawn(
+    [ffmpeg, "-y", "-f", "lavfi", "-i", "testsrc=duration=4:size=320x240:rate=15", "-c:v", "libvpx-vp9", "-b:v", "200k", src],
+    { stdout: "ignore", stderr: "ignore" }
+  );
+  expect(await gen.exited).toBe(0);
+  await page.goto(`${BASE}/#/edit?path=${encodeURIComponent(src)}`);
+  await page.waitForSelector('[data-testid="videojs-host"] video');
+  const video = '[data-testid="videojs-host"] video';
+  await waitFor(async () => (await page.$eval(video, (v: any) => v.currentTime)) > 0.3);
+  // seek forward: only possible because /api/fs/read honors Range requests
+  await page.$eval(video, (v: any) => (v.currentTime = 3.0));
+  await waitFor(async () => (await page.$eval(video, (v: any) => v.currentTime)) >= 3.0);
+  expect(await page.$eval(video, (v: any) => v.seekable.length)).toBeGreaterThan(0);
+}, 30000);
+
+test("video: non-native format transcodes to HLS via video.js", async () => {
+  const ffmpeg = Bun.which("ffmpeg") ?? "/opt/homebrew/bin/ffmpeg";
+  const src = join(play, "movie.mkv");
+  const gen = Bun.spawn(
+    [ffmpeg, "-y", "-f", "lavfi", "-i", "testsrc=duration=3:size=320x240:rate=15", src],
+    { stdout: "ignore", stderr: "ignore" }
+  );
+  expect(await gen.exited).toBe(0);
+  const playlistResponse = page.waitForResponse((r) => r.url().includes("/api/media/hls/") && r.url().endsWith("index.m3u8"), { timeout: 20000 });
+  await page.goto(`${BASE}/#/edit?path=${encodeURIComponent(src)}`);
+  await page.waitForSelector('[data-testid="videojs-host"] video');
+  expect((await playlistResponse).status()).toBe(200);
+  await waitFor(async () => ((await page.textContent('[data-testid="video-status"]')) ?? "").toLowerCase().includes("transcod") || ((await page.textContent('[data-testid="video-status"]')) ?? "").includes("HLS"));
+}, 30000);
+
+test("mobile: dialogs fit the viewport, editor and player usable", async () => {
+  const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  await phone.goto(`${BASE}/#t=${TOKEN}`);
+  await phone.waitForSelector('[data-testid="mnav-files"]');
+  await phone.goto(`${BASE}/#/files?path=${encodeURIComponent(play)}`);
+  await phone.waitForSelector('[data-testid="row-readme.md"]');
+  // dialog fits on a 390px screen
+  await phone.click('[data-testid="new-folder"]');
+  const box = await (await phone.waitForSelector('input[value="untitled folder"]'))!.boundingBox();
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+  await phone.keyboard.press("Escape");
+  await phone.mouse.click(10, 400); // dismiss
+  // editor opens and header wraps without horizontal scroll
+  await phone.goto(`${BASE}/#/edit?path=${encodeURIComponent(join(play, "readme.md"))}`);
+  await phone.waitForSelector(".cm-content");
+  const scrollW = await phone.evaluate(() => document.documentElement.scrollWidth);
+  expect(scrollW).toBeLessThanOrEqual(392);
+  // audio player stacks playlist below on mobile
+  await phone.goto(`${BASE}/#/edit?path=${encodeURIComponent(join(play, "music", "01-first.mp3"))}`);
+  await phone.waitForSelector('[data-testid="media-player"]');
+  expect(await phone.isVisible('[data-testid="media-playlist"]')).toBe(true);
+  await phone.close();
+}, 30000);
+
 test("mobile: bottom nav, compact files table, no tree", async () => {
   const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   await phone.goto(`${BASE}/#t=${TOKEN}`);
