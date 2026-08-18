@@ -15,7 +15,7 @@ import { registerMediaRoutes, cleanupHlsCache } from "./api/media";
 import { currentCommit, checkForUpdate, applyUpdate, isUpdating } from "./updater";
 
 const UI_DIST = join(import.meta.dir, "../../dist/ui");
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 
 export function createServer(db: Database, cfg: StewardConfig, token: string, nodeId = "stw-dev") {
   cleanupHlsCache();
